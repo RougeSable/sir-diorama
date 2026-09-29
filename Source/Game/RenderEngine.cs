@@ -4,17 +4,20 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using SharpDX.Direct3D;
+using SharpDX.Direct3D11;
+using VRageMath;
 using VRageRender;
 
 namespace SirDiorama
 {
     // Everything the plugin uses from the client's render engine
-    // (VRage.Render11), resolved by reflection once and for all. A single
-    // missing name, or an unexpected shape, and Resolve returns null with the
-    // name at fault: the effect stops for the session without touching
-    // anything.
+    // (VRage.Render11 and VRage.Render), resolved by reflection once and for
+    // all. A single missing name, or an unexpected shape, and Resolve returns
+    // null with the name at fault: the effect stops for the session without
+    // touching anything.
     //
-    // Names read from the decompiled VRage.Render11.dll of the game.
+    // Names read from the decompiled VRage.Render11.dll and VRage.Render.dll
+    // of the game.
     internal sealed class RenderEngine
     {
         private const BindingFlags Static = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
@@ -27,7 +30,6 @@ namespace SirDiorama
 
         // m_cs, m_csAlphaLuminance, m_csSkip: MyComputeShaders.Id values.
         public FieldInfo[] Fields;
-        public Type IdType;
 
         // MyShaderCompiler.Compile(string, ShaderMacro[], MyShaderProfile, string, bool): byte[]
         // Returns null when the shader is refused, without crashing.
@@ -36,22 +38,37 @@ namespace SirDiorama
         // MyComputeShaders.Create(string, ShaderMacro[]): MyComputeShaders.Id
         public MethodInfo Create;
 
-        // MyRender11.RC.ComputeShader: SetSrv(int, ISrvBindable), SetUav(int, IUavBindable)
-        public PropertyInfo RenderContext;
-        public PropertyInfo ComputeStage;
+        // MyRender11.RC: its DeviceContext, and its ComputeShader stage with
+        // SetSrv(int, ISrvBindable) and SetConstantBuffer(int, IConstantBuffer).
+        private PropertyInfo m_renderContext;
+        private PropertyInfo m_deviceContext;
+        private PropertyInfo m_computeStage;
         public MethodInfo SetSrv;
-        public MethodInfo SetUav;
+        public MethodInfo SetConstantBuffer;
 
         // MyGBuffer.Main.ResolvedDepthStencil.SrvDepth
-        public FieldInfo MainGBuffer;
-        public PropertyInfo ResolvedDepth;
-        public PropertyInfo DepthView;
+        private FieldInfo m_mainGBuffer;
+        private PropertyInfo m_resolvedDepth;
+        private PropertyInfo m_depthView;
 
-        // MyManagers.Buffers.CreateSrvUav(name, elements, stride, data, uavType, usage, isGlobal)
-        public FieldInfo Buffers;
-        public MethodInfo CreateSrvUav;
-        public PropertyInfo SrvOf;
-        public PropertyInfo UavOf;
+        // MyManagers.Buffers.CreateConstantBuffer(name, byteSize, data, usage, isGlobal),
+        // and IBuffer.Buffer, the Direct3D buffer behind it.
+        private FieldInfo m_buffers;
+        private MethodInfo m_createConstantBuffer;
+        private PropertyInfo m_bufferOf;
+
+        // MyRender11.Environment.Matrices.CameraPosition: the camera of the
+        // frame being drawn, in double precision.
+        private FieldInfo m_environment;
+        private FieldInfo m_matrices;
+        private FieldInfo m_cameraPosition;
+
+        // VRage.Render.Scene: MyIDTracker<MyActor>.FindByID(uint), then
+        // MyActor.UpdateWorldMatrix() and MyActor.LastWorldMatrix: where a
+        // render object is drawn in this very frame.
+        private MethodInfo m_findActor;
+        private MethodInfo m_updateActorMatrix;
+        private PropertyInfo m_actorMatrix;
 
         // MyRender11.m_debugOverrides, whose Fxaa field lets FXAA run.
         public FieldInfo DebugOverrides;
@@ -61,9 +78,10 @@ namespace SirDiorama
         {
             missing = null;
             var r = new RenderEngine();
-            var render = typeof(MyShaderCompiler).Assembly;
+            var render11 = typeof(MyShaderCompiler).Assembly;
+            var render = typeof(MyRenderProxy).Assembly;
 
-            var toneMapping = render.GetType("VRageRender.MyToneMapping");
+            var toneMapping = render11.GetType("VRageRender.MyToneMapping");
             if (toneMapping == null) { missing = "VRageRender.MyToneMapping"; return null; }
 
             r.Run = toneMapping.GetMethod("Run", Static);
@@ -80,82 +98,123 @@ namespace SirDiorama
             r.EnableTonemappingIndex = 3;
             r.AlphaLuminanceIndex = 5;
 
+            var computeShaders = render11.GetType("VRageRender.MyComputeShaders");
+            var idType = render11.GetType("VRageRender.MyComputeShaders+Id");
+            if (computeShaders == null || idType == null) { missing = "VRageRender.MyComputeShaders.Id"; return null; }
+
             r.Fields = new FieldInfo[ShaderVariants.VariantCount];
             for (var i = 0; i < r.Fields.Length; i++)
             {
                 var name = ShaderVariants.GameFields[i];
                 r.Fields[i] = toneMapping.GetField(name, Static);
-                if (r.Fields[i] == null || r.Fields[i].IsInitOnly) { missing = "MyToneMapping." + name; return null; }
+                if (r.Fields[i] == null || r.Fields[i].IsInitOnly || r.Fields[i].FieldType != idType)
+                {
+                    missing = "MyToneMapping." + name + " of type MyComputeShaders.Id";
+                    return null;
+                }
             }
-
-            var computeShaders = render.GetType("VRageRender.MyComputeShaders");
-            r.IdType = render.GetType("VRageRender.MyComputeShaders+Id");
-            if (computeShaders == null || r.IdType == null) { missing = "VRageRender.MyComputeShaders.Id"; return null; }
-            if (r.Fields.Any(f => f.FieldType != r.IdType)) { missing = "MyToneMapping.m_cs of type MyComputeShaders.Id"; return null; }
 
             r.Create = computeShaders.GetMethod("Create", Static, null,
                 new[] { typeof(string), typeof(ShaderMacro[]) }, null);
-            if (r.Create == null || r.Create.ReturnType != r.IdType) { missing = "MyComputeShaders.Create(string, ShaderMacro[])"; return null; }
+            if (r.Create == null || r.Create.ReturnType != idType) { missing = "MyComputeShaders.Create(string, ShaderMacro[])"; return null; }
 
             r.Compile = typeof(MyShaderCompiler).GetMethod("Compile", Static, null,
                 new[] { typeof(string), typeof(ShaderMacro[]), typeof(MyShaderProfile), typeof(string), typeof(bool) }, null);
             if (r.Compile == null || r.Compile.ReturnType != typeof(byte[])) { missing = "MyShaderCompiler.Compile(string, ShaderMacro[], MyShaderProfile, string, bool)"; return null; }
 
-            var render11 = render.GetType("VRageRender.MyRender11");
-            r.RenderContext = render11 == null ? null : render11.GetProperty("RC", Static);
-            if (r.RenderContext == null) { missing = "MyRender11.RC"; return null; }
+            var myRender11 = render11.GetType("VRageRender.MyRender11");
+            r.m_renderContext = myRender11 == null ? null : myRender11.GetProperty("RC", Static);
+            if (r.m_renderContext == null) { missing = "MyRender11.RC"; return null; }
 
-            r.ComputeStage = r.RenderContext.PropertyType.GetProperty("ComputeShader", Instance);
-            if (r.ComputeStage == null) { missing = "MyRenderContext.ComputeShader"; return null; }
+            r.m_deviceContext = r.m_renderContext.PropertyType.GetProperty("DeviceContext", Instance);
+            if (r.m_deviceContext == null || !typeof(DeviceContext).IsAssignableFrom(r.m_deviceContext.PropertyType))
+            {
+                missing = "MyRenderContext.DeviceContext";
+                return null;
+            }
 
-            var srvBindable = render.GetType("VRage.Render11.Resources.ISrvBindable");
-            var uavBindable = render.GetType("VRage.Render11.Resources.IUavBindable");
-            if (srvBindable == null || uavBindable == null) { missing = "VRage.Render11.Resources.ISrvBindable, IUavBindable"; return null; }
+            r.m_computeStage = r.m_renderContext.PropertyType.GetProperty("ComputeShader", Instance);
+            if (r.m_computeStage == null) { missing = "MyRenderContext.ComputeShader"; return null; }
 
-            r.SetSrv = r.ComputeStage.PropertyType.GetMethod("SetSrv", Instance, null,
+            var srvBindable = render11.GetType("VRage.Render11.Resources.ISrvBindable");
+            var constantBuffer = render11.GetType("VRage.Render11.Resources.IConstantBuffer");
+            var buffer = render11.GetType("VRage.Render11.Resources.IBuffer");
+            if (srvBindable == null || constantBuffer == null || buffer == null)
+            {
+                missing = "VRage.Render11.Resources.ISrvBindable, IConstantBuffer, IBuffer";
+                return null;
+            }
+
+            r.SetSrv = r.m_computeStage.PropertyType.GetMethod("SetSrv", Instance, null,
                 new[] { typeof(int), srvBindable }, null);
-            if (r.SetSrv == null) { missing = "MyCommonStage.SetSrv(int, ISrvBindable)"; return null; }
+            if (r.SetSrv == null) { missing = "MyComputeStage.SetSrv(int, ISrvBindable)"; return null; }
 
-            r.SetUav = r.ComputeStage.PropertyType.GetMethod("SetUav", Instance, null,
-                new[] { typeof(int), uavBindable }, null);
-            if (r.SetUav == null) { missing = "MyComputeStage.SetUav(int, IUavBindable)"; return null; }
+            r.SetConstantBuffer = r.m_computeStage.PropertyType.GetMethod("SetConstantBuffer", Instance, null,
+                new[] { typeof(int), constantBuffer }, null);
+            if (r.SetConstantBuffer == null) { missing = "MyComputeStage.SetConstantBuffer(int, IConstantBuffer)"; return null; }
 
-            r.SrvOf = srvBindable.GetProperty("Srv", Instance);
-            r.UavOf = uavBindable.GetProperty("Uav", Instance);
-            if (r.SrvOf == null || r.UavOf == null) { missing = "ISrvBindable.Srv, IUavBindable.Uav"; return null; }
+            r.m_bufferOf = buffer.GetProperty("Buffer", Instance);
+            if (r.m_bufferOf == null || r.m_bufferOf.PropertyType != typeof(SharpDX.Direct3D11.Buffer))
+            {
+                missing = "IBuffer.Buffer";
+                return null;
+            }
 
-            var gbuffer = render.GetType("VRage.Render11.Resources.MyGBuffer");
-            r.MainGBuffer = gbuffer == null ? null : gbuffer.GetField("Main", Static);
-            if (r.MainGBuffer == null) { missing = "MyGBuffer.Main"; return null; }
+            var gbuffer = render11.GetType("VRage.Render11.Resources.MyGBuffer");
+            r.m_mainGBuffer = gbuffer == null ? null : gbuffer.GetField("Main", Static);
+            if (r.m_mainGBuffer == null) { missing = "MyGBuffer.Main"; return null; }
 
-            r.ResolvedDepth = gbuffer.GetProperty("ResolvedDepthStencil", Instance);
-            if (r.ResolvedDepth == null) { missing = "MyGBuffer.ResolvedDepthStencil"; return null; }
+            r.m_resolvedDepth = gbuffer.GetProperty("ResolvedDepthStencil", Instance);
+            if (r.m_resolvedDepth == null) { missing = "MyGBuffer.ResolvedDepthStencil"; return null; }
 
             // Declared on the IDepthStencil interface.
-            r.DepthView = r.ResolvedDepth.PropertyType.GetProperty("SrvDepth", Instance);
-            if (r.DepthView == null || !srvBindable.IsAssignableFrom(r.DepthView.PropertyType))
+            r.m_depthView = r.m_resolvedDepth.PropertyType.GetProperty("SrvDepth", Instance);
+            if (r.m_depthView == null || !srvBindable.IsAssignableFrom(r.m_depthView.PropertyType))
             {
                 missing = "IDepthStencil.SrvDepth";
                 return null;
             }
 
-            var managers = render.GetType("VRage.Render11.Common.MyManagers");
-            r.Buffers = managers == null ? null : managers.GetField("Buffers", Static);
-            if (r.Buffers == null) { missing = "MyManagers.Buffers"; return null; }
+            var managers = render11.GetType("VRage.Render11.Common.MyManagers");
+            r.m_buffers = managers == null ? null : managers.GetField("Buffers", Static);
+            if (r.m_buffers == null) { missing = "MyManagers.Buffers"; return null; }
 
-            r.CreateSrvUav = r.Buffers.FieldType.GetMethods(Instance).FirstOrDefault(m =>
+            r.m_createConstantBuffer = r.m_buffers.FieldType.GetMethods(Instance).FirstOrDefault(m =>
             {
-                if (m.Name != "CreateSrvUav")
+                if (m.Name != "CreateConstantBuffer" || !constantBuffer.IsAssignableFrom(m.ReturnType))
                     return false;
                 var p = m.GetParameters();
-                return p.Length == 7 && p[0].ParameterType == typeof(string) && p[1].ParameterType == typeof(int)
-                    && p[2].ParameterType == typeof(int) && p[3].ParameterType == typeof(IntPtr?)
-                    && p[4].ParameterType.IsEnum && p[5].ParameterType.IsEnum && p[6].ParameterType == typeof(bool)
-                    && srvBindable.IsAssignableFrom(m.ReturnType) && uavBindable.IsAssignableFrom(m.ReturnType);
+                return p.Length == 5 && p[0].ParameterType == typeof(string) && p[1].ParameterType == typeof(int)
+                    && p[2].ParameterType == typeof(IntPtr?) && p[3].ParameterType == typeof(ResourceUsage)
+                    && p[4].ParameterType == typeof(bool);
             });
-            if (r.CreateSrvUav == null) { missing = "MyBufferManager.CreateSrvUav(string, int, int, IntPtr?, MyUavType, ResourceUsage, bool)"; return null; }
+            if (r.m_createConstantBuffer == null) { missing = "MyBufferManager.CreateConstantBuffer(string, int, IntPtr?, ResourceUsage, bool)"; return null; }
 
-            r.DebugOverrides = render11.GetField("m_debugOverrides", Static);
+            r.m_environment = myRender11.GetField("Environment", Static);
+            r.m_matrices = r.m_environment == null ? null : r.m_environment.FieldType.GetField("Matrices", Instance);
+            r.m_cameraPosition = r.m_matrices == null ? null : r.m_matrices.FieldType.GetField("CameraPosition", Instance);
+            if (r.m_cameraPosition == null || r.m_cameraPosition.FieldType != typeof(Vector3D))
+            {
+                missing = "MyRender11.Environment.Matrices.CameraPosition";
+                return null;
+            }
+
+            var actor = render.GetType("VRage.Render.Scene.MyActor");
+            var tracker = render.GetType("VRage.Render.Scene.MyIDTracker`1");
+            if (actor == null || tracker == null) { missing = "VRage.Render.Scene.MyActor, MyIDTracker"; return null; }
+
+            r.m_findActor = tracker.MakeGenericType(actor).GetMethod("FindByID", Static, null, new[] { typeof(uint) }, null);
+            if (r.m_findActor == null || r.m_findActor.ReturnType != actor) { missing = "MyIDTracker<MyActor>.FindByID(uint)"; return null; }
+
+            r.m_updateActorMatrix = actor.GetMethod("UpdateWorldMatrix", Instance, null, Type.EmptyTypes, null);
+            r.m_actorMatrix = actor.GetProperty("LastWorldMatrix", Instance);
+            if (r.m_updateActorMatrix == null || r.m_actorMatrix == null || r.m_actorMatrix.PropertyType != typeof(MatrixD))
+            {
+                missing = "MyActor.UpdateWorldMatrix(), MyActor.LastWorldMatrix";
+                return null;
+            }
+
+            r.DebugOverrides = myRender11.GetField("m_debugOverrides", Static);
             if (r.DebugOverrides == null) { missing = "MyRender11.m_debugOverrides"; return null; }
 
             r.Fxaa = r.DebugOverrides.FieldType.GetField("Fxaa", Instance);
@@ -175,71 +234,83 @@ namespace SirDiorama
         // The scene depth, or null while the GBuffer is not ready.
         public object Depth()
         {
-            var main = MainGBuffer.GetValue(null);
+            var main = m_mainGBuffer.GetValue(null);
             if (main == null)
                 return null;
-            var depth = ResolvedDepth.GetValue(main, null);
+            var depth = m_resolvedDepth.GetValue(main, null);
             if (depth == null)
                 return null;
-            return DepthView.GetValue(depth, null);
+            return m_depthView.GetValue(depth, null);
         }
 
-        public object ComputeShaderStage()
+        public object RenderContext()
         {
-            var context = RenderContext.GetValue(null, null);
-            return context == null ? null : ComputeStage.GetValue(context, null);
+            return m_renderContext.GetValue(null, null);
         }
 
-        // A structured buffer of one float2, readable and writable by a
-        // compute shader, filled with zeros (no valid focus yet).
-        public FocusBuffer CreateFocusBuffer(string name)
+        public object ComputeShaderStage(object renderContext)
         {
-            var manager = Buffers.GetValue(null);
+            return renderContext == null ? null : m_computeStage.GetValue(renderContext, null);
+        }
+
+        public Vector3D CameraPosition()
+        {
+            var environment = m_environment.GetValue(null);
+            var matrices = environment == null ? null : m_matrices.GetValue(environment);
+            return matrices == null ? Vector3D.Zero : (Vector3D)m_cameraPosition.GetValue(matrices);
+        }
+
+        // Where a render object is drawn in this frame; false if the render
+        // thread does not know it (yet, or any more).
+        public bool TryGetActorMatrix(uint renderObjectId, out MatrixD matrix)
+        {
+            matrix = MatrixD.Identity;
+            var actor = m_findActor.Invoke(null, new object[] { renderObjectId });
+            if (actor == null)
+                return false;
+            m_updateActorMatrix.Invoke(actor, null);
+            matrix = (MatrixD)m_actorMatrix.GetValue(actor, null);
+            return true;
+        }
+
+        // A dynamic constant buffer of this size, written by the CPU every
+        // frame. Null while the game's buffer manager is not ready.
+        public object CreateConstantBuffer(string name, int byteSize)
+        {
+            var manager = m_buffers.GetValue(null);
             if (manager == null)
                 return null;
+            return m_createConstantBuffer.Invoke(manager, new object[]
+            {
+                name, byteSize, null, ResourceUsage.Dynamic, true,
+            });
+        }
 
-            var zeros = new float[2];
-            var handle = GCHandle.Alloc(zeros, GCHandleType.Pinned);
+        // False once the Direct3D buffer behind it is gone (a device reset
+        // releases every buffer): the plugin then creates a new one.
+        public bool IsAlive(object constantBuffer)
+        {
+            if (constantBuffer == null)
+                return false;
+            var buffer = m_bufferOf.GetValue(constantBuffer, null) as SharpDX.Direct3D11.Buffer;
+            return buffer != null && !buffer.IsDisposed && buffer.NativePointer != IntPtr.Zero;
+        }
+
+        // Writes the values into the buffer, discarding what it held: the GPU
+        // keeps the previous frame's copy for as long as it needs it.
+        public void Write(object renderContext, object constantBuffer, float[] values)
+        {
+            var context = (DeviceContext)m_deviceContext.GetValue(renderContext, null);
+            var buffer = (SharpDX.Direct3D11.Buffer)m_bufferOf.GetValue(constantBuffer, null);
+            var box = context.MapSubresource(buffer, 0, MapMode.WriteDiscard, MapFlags.None);
             try
             {
-                var p = CreateSrvUav.GetParameters();
-                var buffer = CreateSrvUav.Invoke(manager, new object[]
-                {
-                    name, 1, 2 * sizeof(float), (IntPtr?)handle.AddrOfPinnedObject(),
-                    Enum.ToObject(p[4].ParameterType, 0), Enum.ToObject(p[5].ParameterType, 0), true,
-                });
-                if (buffer == null)
-                    return null;
-                return new FocusBuffer(buffer, SrvOf.GetValue(buffer, null), UavOf.GetValue(buffer, null));
+                Marshal.Copy(values, 0, box.DataPointer, values.Length);
             }
             finally
             {
-                handle.Free();
+                context.UnmapSubresource(buffer, 0);
             }
-        }
-
-        // False once the game has released or reused the buffer (a device
-        // reset releases every buffer): the plugin then creates a new one.
-        public bool IsAlive(FocusBuffer buffer)
-        {
-            return buffer != null && buffer.Srv != null && buffer.Uav != null
-                && ReferenceEquals(SrvOf.GetValue(buffer.Buffer, null), buffer.Srv)
-                && ReferenceEquals(UavOf.GetValue(buffer.Buffer, null), buffer.Uav);
-        }
-    }
-
-    // One of the two focus buffers, with the views it had at creation.
-    internal sealed class FocusBuffer
-    {
-        public readonly object Buffer;
-        public readonly object Srv;
-        public readonly object Uav;
-
-        public FocusBuffer(object buffer, object srv, object uav)
-        {
-            Buffer = buffer;
-            Srv = srv;
-            Uav = uav;
         }
     }
 }

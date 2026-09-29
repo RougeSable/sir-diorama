@@ -1,36 +1,93 @@
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using HarmonyLib;
 using Xunit;
 
 namespace SirDiorama.Tests
 {
-    public class CohabitationTests
+    // Stands for VRageRender.MyToneMapping, the game's final colour pass,
+    // which the tests cannot load: same method name, same place in the story.
+    public static class ToneMappingStandIn
+    {
+        public static int Calls;
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static void Run()
+        {
+            Calls++;
+        }
+    }
+
+    public static class OtherPluginPatch
+    {
+        public static void Prefix()
+        {
+        }
+    }
+
+    public class CoexistenceTests
     {
         private const string Own = "sir-diorama";
         private const string Step = "MyToneMapping.Run";
 
         // Another plugin (here Sir Cel Shading) is already hooked on the final
-        // colour pass: Sir Diorama yields, stops for the session without
-        // touching anything, writes one line to the game log, and tells the
-        // player which plugin keeps the step.
+        // colour pass, through Harmony: Sir Diorama reads the owners of the
+        // method as the game side does (Harmony.GetPatchInfo), yields, stops
+        // for the session without touching anything, writes one line to the
+        // game log, and tells the player which plugin keeps the step.
         [Fact]
-        public void CedeLaPlaceQuandUnAutreGreffonTientLEtape()
+        public void YieldsWhenAnotherPluginPatchedToneMapping()
         {
-            var log = new List<string>();
-            var stop = new SessionStop(log.Add);
-            var coexistence = new Coexistence(Own, stop);
+            var method = typeof(ToneMappingStandIn).GetMethod("Run");
+            var other = new Harmony("sir-cel-shading");
+            other.Patch(method, prefix: new HarmonyMethod(typeof(OtherPluginPatch).GetMethod("Prefix")));
+            try
+            {
+                var log = new List<string>();
+                var stop = new SessionStop(log.Add);
+                var coexistence = new Coexistence(Own, stop);
 
-            Assert.True(coexistence.YieldIfTaken(new[] { "sir-cel-shading" }, Step));
+                var info = Harmony.GetPatchInfo(method);
+                Assert.NotNull(info);
+                Assert.True(coexistence.YieldIfTaken(info.Owners, Step));
 
-            Assert.True(stop.IsStopped);
-            Assert.Single(log);
-            Assert.Contains("sir-cel-shading", log[0]);
+                Assert.True(stop.IsStopped);
+                var line = Assert.Single(log);
+                Assert.Contains("sir-cel-shading", line);
+                Assert.Contains(Step, line);
 
-            var shown = new List<string>();
-            stop.Deliver(true, shown.Add);
-            var notice = Assert.Single(shown);
-            Assert.StartsWith(Texts.StopPrefix, notice);
-            Assert.Contains("sir-cel-shading", notice);
-            Assert.Contains("yields", notice);
+                var shown = new List<string>();
+                stop.Deliver(true, shown.Add);
+                var notice = Assert.Single(shown);
+                Assert.StartsWith(Texts.StopPrefix, notice);
+                Assert.Contains("sir-cel-shading", notice);
+                Assert.Contains("yields", notice);
+                Assert.Equal(notice, stop.Reason);
+            }
+            finally
+            {
+                other.UnpatchAll("sir-cel-shading");
+            }
+        }
+
+        // Our own patch alone is not another plugin: the step is ours.
+        [Fact]
+        public void KeepsTheStepWhenOnlyItsOwnPatchIsThere()
+        {
+            var method = typeof(ToneMappingStandIn).GetMethod("Run");
+            var own = new Harmony(Own);
+            own.Patch(method, prefix: new HarmonyMethod(typeof(OtherPluginPatch).GetMethod("Prefix")));
+            try
+            {
+                var stop = new SessionStop(null);
+                var coexistence = new Coexistence(Own, stop);
+                Assert.False(coexistence.YieldIfTaken(Harmony.GetPatchInfo(method).Owners, Step));
+                Assert.False(stop.IsStopped);
+            }
+            finally
+            {
+                own.UnpatchAll(Own);
+            }
         }
 
         [Fact]
@@ -41,16 +98,6 @@ namespace SirDiorama.Tests
 
             Assert.False(coexistence.YieldIfTaken(null, Step));
             Assert.False(coexistence.YieldIfTaken(new string[0], Step));
-            Assert.False(stop.IsStopped);
-        }
-
-        [Fact]
-        public void OurOwnPatchIsNotAnotherPlugin()
-        {
-            var stop = new SessionStop(null);
-            var coexistence = new Coexistence(Own, stop);
-
-            Assert.False(coexistence.YieldIfTaken(new[] { Own, "", null }, Step));
             Assert.False(stop.IsStopped);
         }
 

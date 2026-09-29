@@ -29,6 +29,8 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
+    <!-- To patch a stand-in of the final colour pass as another plugin would. -->
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
   </ItemGroup>
 
 </Project>

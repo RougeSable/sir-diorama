@@ -2,6 +2,6 @@ using System.Reflection;
 
 [assembly: AssemblyTitle("Sir Diorama")]
 [assembly: AssemblyProduct("Sir Diorama")]
-[assembly: AssemblyDescription("Player side look in the manner of The Touryst: big pixels and miniature blur.")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyDescription("Player side blocky look in the manner of Minecraft: square texels fastened to the world.")]
+[assembly: AssemblyVersion("2.0.0.0")]
+[assembly: AssemblyFileVersion("2.0.0.0")]

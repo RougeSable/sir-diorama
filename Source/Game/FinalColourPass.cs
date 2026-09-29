@@ -1,7 +1,7 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using VRageMath;
 using VRageRender;
 
 namespace SirDiorama
@@ -10,12 +10,13 @@ namespace SirDiorama
     // final colour pass (the method proven on Sir Cel Shading).
     //
     // On: the prefix puts our variant in the static field of the variant in
-    // use, binds the scene depth in t31 and the two focus buffers in t30 and
-    // u1, and keeps FXAA off; the postfix gives the field its game shader back
-    // and unbinds the three slots. Off, or stopped: nothing is touched, FXAA
+    // use, fills and binds the plugin's constant buffer (b6) and the scene
+    // depth (t31), and keeps FXAA off; the postfix gives the field its game
+    // shader back and unbinds both. Off, or stopped: nothing is touched, FXAA
     // gets its setting back, the game draws with its own shaders.
     //
-    // Everything below runs on the render thread, and on it alone.
+    // Everything below runs on the render thread, and on it alone, except the
+    // two volatile snapshots written by the main thread.
     internal static class FinalColourPass
     {
         // Set once by the plugin, before the patch is applied.
@@ -23,27 +24,33 @@ namespace SirDiorama
         public static SessionStop Stop;
         public static string ShaderPath;
 
-        // Snapshot of the settings, replaced as a whole by the main thread.
-        private static volatile DioramaSettings s_settings = new DioramaSettings();
+        // Snapshots replaced as a whole by the main thread.
+        private static volatile LookSettings s_settings = new LookSettings();
+        private static volatile Anchor s_anchor = Anchor.Default;
 
-        public static DioramaSettings CurrentSettings
+        public static LookSettings CurrentSettings
         {
             get { return s_settings; }
-            set { s_settings = (value ?? new DioramaSettings()).Normalized(); }
+            set { s_settings = (value ?? new LookSettings()).Normalized(); }
         }
 
-        // Variants already created by the game, per settings signature. An
-        // entry is null until that variant is first needed.
-        private static readonly Dictionary<string, object[]> s_variants = new Dictionary<string, object[]>();
+        public static Anchor CurrentAnchor
+        {
+            get { return s_anchor; }
+            set { s_anchor = value ?? Anchor.Default; }
+        }
+
+        // The three variants, created by the game the first time each one is
+        // needed, then kept for the session.
+        private static readonly object[] s_variants = new object[ShaderVariants.VariantCount];
+
+        private static object s_constants;
+        private static readonly float[] s_values = new float[LookConstants.FloatCount];
 
         // What the prefix changed, for the postfix to give back.
         private static FieldInfo s_replacedField;
         private static object s_gameShader;
         private static object s_boundStage;
-
-        // Focus of the previous frame (read) and of this one (written).
-        private static readonly FocusBuffer[] s_focus = new FocusBuffer[2];
-        private static int s_focusRead;
 
         // FXAA: while the effect is on, the renderer works with a copy of the
         // game's debug overrides where Fxaa is false. The game's own object is
@@ -61,13 +68,14 @@ namespace SirDiorama
                     return;
 
                 var settings = s_settings;
-                if (Stop.IsStopped || !settings.Enabled || !settings.HasVisibleEffect)
+                if (Stop.IsStopped || !settings.Enabled)
                 {
                     GiveFxaaBack();
                     return;
                 }
 
-                var stage = Engine.ComputeShaderStage();
+                var context = Engine.RenderContext();
+                var stage = Engine.ComputeShaderStage(context);
                 var depth = Engine.Depth();
                 if (stage == null || depth == null)
                     return; // GBuffer not ready yet: this frame stays the game's
@@ -75,15 +83,21 @@ namespace SirDiorama
                 var variant = ShaderVariants.Pick(
                     (bool)__args[Engine.EnableTonemappingIndex],
                     (bool)__args[Engine.AlphaLuminanceIndex]);
-                var id = VariantId(settings, variant);
+                var id = VariantId(variant);
                 if (id == null)
                 {
                     GiveFxaaBack();
                     return;
                 }
 
-                if (!FocusBuffersReady())
-                    return;
+                if (!Engine.IsAlive(s_constants))
+                {
+                    s_constants = Engine.CreateConstantBuffer("SirDiorama.LookConstants", LookConstants.ByteSize);
+                    if (!Engine.IsAlive(s_constants))
+                        return; // buffer manager not ready: this frame stays the game's
+                }
+                FillConstants(settings);
+                Engine.Write(context, s_constants, s_values);
 
                 var field = Engine.Fields[(int)variant];
                 s_gameShader = field.GetValue(null);
@@ -92,8 +106,7 @@ namespace SirDiorama
 
                 s_boundStage = stage;
                 Engine.SetSrv.Invoke(stage, new[] { (object)ShaderSource.DepthSlot, depth });
-                Engine.SetSrv.Invoke(stage, new[] { (object)ShaderSource.FocusInSlot, s_focus[s_focusRead].Buffer });
-                Engine.SetUav.Invoke(stage, new[] { (object)ShaderSource.FocusOutSlot, s_focus[1 - s_focusRead].Buffer });
+                Engine.SetConstantBuffer.Invoke(stage, new[] { (object)ShaderSource.ConstantsSlot, s_constants });
 
                 HoldFxaaOff();
             }
@@ -108,8 +121,7 @@ namespace SirDiorama
         {
             try
             {
-                if (GiveBack())
-                    s_focusRead = 1 - s_focusRead;
+                GiveBack();
             }
             catch (Exception e)
             {
@@ -130,6 +142,47 @@ namespace SirDiorama
             return __exception;
         }
 
+        // The frames the texels are fastened to, for the very frame being
+        // drawn: the grid's matrix is read from the render thread's own copy,
+        // and the camera is the one of this frame. Everything is computed in
+        // double precision, then handed to the shader relative to the camera:
+        // the frame of the surroundings, and the grid's frame with its box,
+        // which only the points inside that box take.
+        private static void FillConstants(LookSettings settings)
+        {
+            var anchor = s_anchor;
+            var grid = anchor.Grid;
+            var origin = Vec3d.Zero;
+            var axisX = Vec3d.UnitX;
+            var axisY = Vec3d.UnitY;
+            var axisZ = Vec3d.UnitZ;
+
+            if (grid != null)
+            {
+                origin = grid.Origin;
+                axisX = grid.AxisX;
+                axisY = grid.AxisY;
+                axisZ = grid.AxisZ;
+
+                MatrixD matrix;
+                if (Engine.TryGetActorMatrix(grid.RenderObjectId, out matrix))
+                {
+                    origin = ToVec(matrix.Translation);
+                    axisX = ToVec(matrix.Right).Normalized();
+                    axisY = ToVec(matrix.Up).Normalized();
+                    axisZ = ToVec(matrix.Backward).Normalized();
+                }
+            }
+
+            var camera = ToVec(Engine.CameraPosition());
+            LookConstants.Pack(s_values, anchor, camera, origin, axisX, axisY, axisZ, settings);
+        }
+
+        private static Vec3d ToVec(Vector3D v)
+        {
+            return new Vec3d(v.X, v.Y, v.Z);
+        }
+
         private static void SafeGiveBack()
         {
             try { GiveBack(); }
@@ -138,8 +191,7 @@ namespace SirDiorama
             catch (Exception) { }
         }
 
-        // True if something was bound for this frame.
-        private static bool GiveBack()
+        private static void GiveBack()
         {
             if (s_replacedField != null)
             {
@@ -150,14 +202,12 @@ namespace SirDiorama
             }
 
             if (s_boundStage == null)
-                return false;
+                return;
 
             var stage = s_boundStage;
             s_boundStage = null;
             Engine.SetSrv.Invoke(stage, new object[] { ShaderSource.DepthSlot, null });
-            Engine.SetSrv.Invoke(stage, new object[] { ShaderSource.FocusInSlot, null });
-            Engine.SetUav.Invoke(stage, new object[] { ShaderSource.FocusOutSlot, null });
-            return true;
+            Engine.SetConstantBuffer.Invoke(stage, new object[] { ShaderSource.ConstantsSlot, null });
         }
 
         private static void HoldFxaaOff()
@@ -190,39 +240,15 @@ namespace SirDiorama
             s_gameOverrides = null;
         }
 
-        private static bool FocusBuffersReady()
+        // The variant, compiled by the game the first time it is needed. Null
+        // if it is refused: the effect is then stopped for the session, never
+        // drawn half way.
+        private static object VariantId(Variant variant)
         {
-            for (var i = 0; i < s_focus.Length; i++)
-            {
-                if (Engine.IsAlive(s_focus[i]))
-                    continue;
+            if (s_variants[(int)variant] != null)
+                return s_variants[(int)variant];
 
-                s_focus[i] = Engine.CreateFocusBuffer("SirDiorama.Focus" + i);
-                if (s_focus[i] == null)
-                {
-                    Stop.Stop("could not create the focus buffers", Texts.StopFault);
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        // The variant for these settings, compiled by the game the first time
-        // it is needed. Null if it is refused: the effect is then stopped for
-        // the session, never drawn half way.
-        private static object VariantId(DioramaSettings settings, Variant variant)
-        {
-            var signature = ShaderVariants.Signature(settings);
-            object[] ids;
-            if (!s_variants.TryGetValue(signature, out ids))
-            {
-                ids = new object[ShaderVariants.VariantCount];
-                s_variants[signature] = ids;
-            }
-            if (ids[(int)variant] != null)
-                return ids[(int)variant];
-
-            var definitions = ShaderVariants.Macros(variant, settings);
+            var definitions = ShaderVariants.Macros(variant);
             var macros = RenderEngine.ToSharpDX(definitions);
             var description = variant + " (" + string.Join(" ", definitions) + ")";
 
@@ -253,7 +279,7 @@ namespace SirDiorama
             // Then the game creates it, finding it in its own cache.
             try
             {
-                ids[(int)variant] = Engine.Create.Invoke(null, new object[] { ShaderPath, macros });
+                s_variants[(int)variant] = Engine.Create.Invoke(null, new object[] { ShaderPath, macros });
             }
             catch (TargetInvocationException e)
             {
@@ -261,7 +287,7 @@ namespace SirDiorama
                     Texts.StopVariantRefused);
                 return null;
             }
-            return ids[(int)variant];
+            return s_variants[(int)variant];
         }
 
         // Checked before the patch is applied: a missing header would make the

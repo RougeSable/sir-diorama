@@ -9,8 +9,8 @@
   <Id>RougeSable/sir-diorama</Id>
   <FriendlyName>Sir Diorama</FriendlyName>
   <Author>RougeSable</Author>
-  <Tooltip>The Touryst look: big pixels, reduced palette and miniature blur.</Tooltip>
-  <Description>Sir Diorama gives the game the look of The Touryst: the world drawn in big pixels with a reduced palette and a stable dither, like a miniature diorama. What you look at is sharp, the foreground and the distance are blurred, and out of focus lights spread into small discs. Each effect has its own settings (pixel size, palette colours, blur strength). Switch it on or off at any time with Alt+F2 (changeable), /diorama in the chat, or the plugin settings. The interface stays sharp and screenshots show the effect. Everything happens on your machine: players without the plugin see the game's rendering.</Description>
+  <Tooltip>The Minecraft look: every surface drawn in big square texels.</Tooltip>
+  <Description>Sir Diorama gives the game the look of Minecraft: every surface is drawn in big square texels of plain colour, fastened to the world. Near a ship or a station, texel edges fall on block edges; on a planet, the ground carries square texels; far away, texels grow so that they stay big on screen. Colours get a touch of extra saturation. Everything stays sharp at every distance: no blur. Settings: texels per metre (16 by default, as in Minecraft), smallest texel on screen, colour boost. Switch it on or off at any time with Alt+F2 (changeable), /diorama in the chat, or the plugin settings; off, the picture is exactly the game's. The interface stays sharp and screenshots show the effect. Everything happens on your machine: players without the plugin see the game's rendering.</Description>
   <Commit>0000000000000000000000000000000000000000</Commit>
   <SourceDirectories>
     <Directory>Source</Directory>

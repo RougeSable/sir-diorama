@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -10,10 +9,10 @@ using Xunit.Abstractions;
 
 namespace SirDiorama.Tests
 {
-    // Compiles the variant for real, with the Windows HLSL compiler
+    // Compiles the plugin's shader for real, with the Windows HLSL compiler
     // (d3dcompiler_47, the one the game uses through SharpDX) and the game's
-    // own headers, for every variant and a spread of settings. A variant that
-    // does not compile would stop the effect in game.
+    // own headers, for each of the three variants. A variant that does not
+    // compile would stop the effect in game.
     //
     // The game's headers are found through SE_SHADERS (the Content\Shaders
     // folder), SE_BIN64 (the game's Bin64 folder), or a copy of the game next
@@ -39,30 +38,47 @@ namespace SirDiorama.Tests
             }
 
             var source = Flatten(ShaderSource.Text, null, shaders, new List<string>());
-            var settings = new[]
-            {
-                new DioramaSettings(),
-                new DioramaSettings { PixelSize = 2, PaletteColors = 8, BlurStrength = 100 },
-                new DioramaSettings { PixelSize = 3, PaletteColors = 64, BlurStrength = 10 },
-                new DioramaSettings { PixelSize = 7, PaletteColors = 17 },
-                new DioramaSettings { PixelSize = 8, MiniatureEnabled = false },
-                new DioramaSettings { PixelsEnabled = false },
-                new DioramaSettings { PixelsEnabled = false, BlurStrength = 100 },
-            };
-
             var compiled = 0;
-            foreach (var s in settings)
+            foreach (Variant variant in Enum.GetValues(typeof(Variant)))
             {
-                foreach (Variant variant in Enum.GetValues(typeof(Variant)))
+                var macros = ShaderVariants.Macros(variant);
+                // Debug, as the game compiles (MyShaderCompiler, optimize: false);
+                // then at the highest optimisation level, as a precaution.
+                foreach (var flags in new uint[] { 1, 1 | 32768 })
                 {
-                    var macros = ShaderVariants.Macros(variant, s);
                     string errors;
-                    var ok = Compile(source, macros, out errors);
+                    var ok = Compile(source, macros, flags, out errors);
                     Assert.True(ok, variant + " " + string.Join(" ", macros) + "\n" + errors);
                     compiled++;
                 }
             }
-            m_output.WriteLine(compiled + " variants compiled against " + shaders);
+            m_output.WriteLine(compiled + " compilations against " + shaders);
+        }
+
+        [Fact]
+        public void TheShaderReadsItsSettingsFromTheConstantBuffer()
+        {
+            var text = ShaderSource.Text;
+            Assert.Contains("register(b" + ShaderSource.ConstantsSlot + ")", text);
+            Assert.Contains("register(t" + ShaderSource.DepthSlot + ")", text);
+            Assert.InRange(ShaderSource.ConstantsSlot, 1, 7);
+            // Ten float4, as the cbuffer declares them.
+            Assert.Equal(160, LookConstants.ByteSize);
+            Assert.Equal(10, Regex.Matches(text, "^\\s*float4 Look\\w+;", RegexOptions.Multiline).Count);
+            foreach (var header in ShaderSource.GameHeaders)
+                Assert.Contains("#include <" + header + ">", text);
+        }
+
+        [Fact]
+        public void EachVariantHasTheGameFlags()
+        {
+            Assert.Equal(new[] { "NUMTHREADS=8" }, ShaderVariants.Macros(Variant.Normal).ConvertAll(m => m.ToString()));
+            Assert.Equal(new[] { "NUMTHREADS=8", "FILL_ALPHA_LUMINANCE" }, ShaderVariants.Macros(Variant.AlphaLuminance).ConvertAll(m => m.ToString()));
+            Assert.Equal(new[] { "NUMTHREADS=8", "DISABLE_TONEMAPPING" }, ShaderVariants.Macros(Variant.NoTonemapping).ConvertAll(m => m.ToString()));
+
+            Assert.Equal(Variant.NoTonemapping, ShaderVariants.Pick(false, true));
+            Assert.Equal(Variant.AlphaLuminance, ShaderVariants.Pick(true, true));
+            Assert.Equal(Variant.Normal, ShaderVariants.Pick(true, false));
         }
 
         private static string FindGameShaders()
@@ -147,7 +163,7 @@ namespace SirDiorama.Tests
             byte[] source, UIntPtr size, string sourceName, ShaderMacro[] defines, IntPtr include,
             string entryPoint, string target, uint flags1, uint flags2, out ID3DBlob code, out ID3DBlob errors);
 
-        private static bool Compile(string source, List<MacroDefinition> macros, out string errors)
+        private static bool Compile(string source, List<MacroDefinition> macros, uint flags, out string errors)
         {
             var defines = new ShaderMacro[macros.Count + 1];
             var allocated = new List<IntPtr>();
@@ -164,9 +180,8 @@ namespace SirDiorama.Tests
 
                 var bytes = Encoding.ASCII.GetBytes(source);
                 ID3DBlob code, messages;
-                // Same flags as the game (MyShaderCompiler: debug, no optimisation).
                 var hr = D3DCompile(bytes, (UIntPtr)bytes.Length, ShaderSource.FileName, defines, IntPtr.Zero,
-                    "__compute_shader", "cs_5_0", 1, 0, out code, out messages);
+                    "__compute_shader", "cs_5_0", flags, 0, out code, out messages);
 
                 errors = messages == null ? "" : Marshal.PtrToStringAnsi(messages.GetBufferPointer(), (int)messages.GetBufferSize());
                 return hr >= 0 && code != null;

@@ -5,8 +5,8 @@ namespace SirDiorama
     {
         public const string DisplayName = "Sir Diorama";
 
-        public const string On = "Sir Diorama: diorama look on.";
-        public const string Off = "Sir Diorama: diorama look off, back to the game's own rendering.";
+        public const string On = "Sir Diorama: blocky look on.";
+        public const string Off = "Sir Diorama: blocky look off, back to the game's own rendering.";
         public const string CommandHelp =
             "Sir Diorama: /diorama toggles the look, /diorama on, /diorama off, /diorama status, /diorama key Alt+F2.";
 
@@ -45,18 +45,15 @@ namespace SirDiorama
         public const string ScreenTitle = "Sir Diorama";
         public const string EnableBox = "Enable plugin";
         public const string EnableBoxHelp =
-            "Big pixels and miniature look. Unticked, the game gets its own rendering back, exactly.";
-        public const string PixelsBox = "Big pixels";
-        public const string PixelsBoxHelp = "Square pixels, reduced palette and a stable dither, in the spirit of 8 and 16 bit games.";
-        public const string PixelSize = "Pixel size";
-        public const string PixelSizeHelp = "Size of one big pixel, in screen pixels.";
-        public const string PaletteColors = "Palette colours";
-        public const string PaletteColorsHelp = "Number of colours of the palette. The dither never makes an area brighter.";
-        public const string MiniatureBox = "Miniature blur";
-        public const string MiniatureBoxHelp =
-            "Sharp where you look, blurred in front and behind. Out of focus lights spread into small discs.";
-        public const string BlurStrength = "Blur strength";
-        public const string BlurStrengthHelp = "0 %: no blur; 100 %: the largest discs.";
+            "The blocky look, in the manner of Minecraft. Unticked, the game gets its own rendering back, exactly.";
+        public const string TexelDensity = "Texels per metre";
+        public const string TexelDensityHelp =
+            "How many texels cover one metre of surface. 16 is Minecraft's own: a large block is 40 texels wide, a small one 8.";
+        public const string SmallestTexel = "Smallest texel";
+        public const string SmallestTexelHelp =
+            "Far away, texels grow so that none is smaller than this many screen pixels.";
+        public const string ColourBoost = "Colour boost";
+        public const string ColourBoostHelp = "Extra saturation, for plain and bright colours. 0 %: the game's colours.";
         public const string Hotkey = "Shortcut";
         public const string HotkeyHelp = "Switches the look on and off during play. Chat: /diorama key Alt+F2.";
         public const string CtrlBox = "Ctrl";
@@ -66,9 +63,9 @@ namespace SirDiorama
         public const string CloseButton = "Close";
         public const string ScreenStopped = "Stopped for this session, see the game log.";
 
-        public static string PaletteValue(int requested, PaletteLevels levels)
+        public static string DensityValue(int density)
         {
-            return levels.Colors + " (" + levels.Red + "x" + levels.Green + "x" + levels.Blue + ")";
+            return density + " (" + (100.0 / density).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " cm)";
         }
     }
 }

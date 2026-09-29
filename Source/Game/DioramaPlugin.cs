@@ -11,9 +11,10 @@ using VRageRender;
 
 namespace SirDiorama
 {
-    // Sir Diorama, a player side plugin loaded by Pulsar. It only changes the
-    // look of the game on the player's own machine: nothing goes through the
-    // server, and a player without the plugin sees the game's rendering.
+    // Sir Diorama, a player side plugin loaded by Pulsar: the world in the
+    // manner of Minecraft. It only changes the look of the game on the
+    // player's own machine: nothing goes through the server, and a player
+    // without the plugin sees the game's rendering.
     public class DioramaPlugin : IPlugin
     {
         public const string Id = "sir-diorama";
@@ -22,16 +23,22 @@ namespace SirDiorama
         // final colour pass (60 updates per second).
         private const int CoexistenceInterval = 600;
 
+        // How many updates between two choices of what the texels are
+        // fastened to.
+        private const int AnchorInterval = 10;
+
         private const string Step = "MyToneMapping.Run";
 
         private Harmony m_harmony;
         private RenderEngine m_engine;
         private SessionStop m_stop;
         private Coexistence m_coexistence;
+        private readonly AnchorPicker m_anchors = new AnchorPicker();
         private string m_settingsPath;
         private bool m_patched;
         private bool m_commandHooked;
-        private int m_counter;
+        private int m_coexistenceCounter;
+        private int m_anchorCounter;
 
         public static DioramaPlugin Instance { get; private set; }
 
@@ -40,7 +47,7 @@ namespace SirDiorama
             get { return m_stop; }
         }
 
-        public DioramaSettings Settings
+        public LookSettings Settings
         {
             get { return FinalColourPass.CurrentSettings.Copy(); }
         }
@@ -66,7 +73,7 @@ namespace SirDiorama
             if (problem != null)
                 Log(problem + "; using the defaults");
 
-            Log("loaded, diorama look " + (FinalColourPass.CurrentSettings.Enabled ? "on" : "off")
+            Log("loaded, blocky look " + (FinalColourPass.CurrentSettings.Enabled ? "on" : "off")
                 + ", shortcut " + FinalColourPass.CurrentSettings.Hotkey);
 
             try
@@ -124,8 +131,7 @@ namespace SirDiorama
                 finalizer: new HarmonyMethod(pass.GetMethod("Finalizer")));
             m_patched = true;
             Log("hooked on " + Step + ", depth in t" + ShaderSource.DepthSlot
-                + ", focus in t" + ShaderSource.FocusInSlot + " and u" + ShaderSource.FocusOutSlot
-                + ", effect written to " + shaderPath);
+                + ", constants in b" + ShaderSource.ConstantsSlot + ", effect written to " + shaderPath);
         }
 
         private static void WriteShader(string path)
@@ -164,10 +170,19 @@ namespace SirDiorama
 
                 m_stop.Deliver(worldOpen, ShowNotification);
 
-                if (m_patched && !m_stop.IsStopped && ++m_counter >= CoexistenceInterval)
+                if (!m_patched || m_stop.IsStopped)
+                    return;
+
+                if (++m_coexistenceCounter >= CoexistenceInterval)
                 {
-                    m_counter = 0;
+                    m_coexistenceCounter = 0;
                     YieldIfTaken();
+                }
+
+                if (worldOpen && FinalColourPass.CurrentSettings.Enabled && ++m_anchorCounter >= AnchorInterval)
+                {
+                    m_anchorCounter = 0;
+                    FinalColourPass.CurrentAnchor = m_anchors.Pick();
                 }
             }
             catch (Exception e)
@@ -255,9 +270,10 @@ namespace SirDiorama
 
         // Taken into account at once, without restarting the game: the next
         // frame is drawn with the new settings.
-        public void Apply(DioramaSettings settings)
+        public void Apply(LookSettings settings)
         {
             FinalColourPass.CurrentSettings = settings;
+            m_anchorCounter = AnchorInterval;
             try
             {
                 SettingsFile.Save(m_settingsPath, FinalColourPass.CurrentSettings);

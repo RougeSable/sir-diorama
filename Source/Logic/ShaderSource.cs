@@ -5,23 +5,22 @@ namespace SirDiorama
     // player's folder and compiled by the game itself (MyShaderCompiler.Compile,
     // then MyComputeShaders.Create), with the game's own headers.
     //
-    // Why here: it is the last step that sees the scene in HDR, so a light can
-    // still shine through the blur and spread into a disc; and it comes before
-    // the selection highlight, the billboards and FXAA. The interface (HUD,
-    // menus, texts) is drawn much later, by RenderMainSprites: it stays sharp.
+    // Why here: it is the last step that sees the scene in HDR, so a texel
+    // takes the true light of the surface before the game's exposure and
+    // filmic curve; and it comes before the selection highlight, the
+    // billboards and FXAA. The interface (HUD, menus, texts) is drawn much
+    // later, by RenderMainSprites: it stays sharp.
     public static class ShaderSource
     {
-        public const string FileName = "Diorama.hlsl";
+        public const string FileName = "Blocky.hlsl";
 
-        // Scene depth. No file of the game's Content/Shaders declares t30 or
-        // t31, and the game's pass only uses t0 to t3.
+        // Scene depth. No file of the game's Content/Shaders declares t31, and
+        // the game's pass only uses t0 to t3.
         public const int DepthSlot = 31;
 
-        // Focus of the previous frame (read) and of this frame (written): two
-        // tiny buffers swapped every frame, so that the focus eases smoothly
-        // from one frame to the next.
-        public const int FocusInSlot = 30;
-        public const int FocusOutSlot = 1;
+        // The plugin's constant buffer (LookConstants). The game's pass only
+        // binds b0 (frame constants); the compute stage has eight slots.
+        public const int ConstantsSlot = 6;
 
         // Game headers the variant depends on, relative to Content/Shaders.
         // Included between angle brackets: the game's compiler then looks for
@@ -30,7 +29,6 @@ namespace SirDiorama
         {
             "Postprocess/Tonemapping/Filters.hlsli",
             "Postprocess/Tonemapping/Defines.hlsli",
-            "Random.hlsli",
         };
 
         public static string Text
@@ -40,278 +38,233 @@ namespace SirDiorama
                 return Header
                     + "#include <" + GameHeaders[0] + ">\n"
                     + "#include <" + GameHeaders[1] + ">\n"
-                    + "#include <" + GameHeaders[2] + ">\n"
                     + "\n"
-                    + "Texture2D<float> DioramaDepth : register(t" + DepthSlot + ");\n"
-                    + "StructuredBuffer<float2> DioramaFocusIn : register(t" + FocusInSlot + ");\n"
-                    + "RWStructuredBuffer<float2> DioramaFocusOut : register(u" + FocusOutSlot + ");\n"
+                    + "Texture2D<float> LookDepth : register(t" + DepthSlot + ");\n"
                     + "\n"
-                    + "#define DIORAMA_FAR " + ShaderVariants.Float(Focus.Far) + "\n"
-                    + "#define DIORAMA_NEAR " + ShaderVariants.Float(Focus.Near) + "\n"
-                    + "#define DIORAMA_SHARP_BAND " + ShaderVariants.Float(Focus.SharpBand) + "\n"
-                    + "#define DIORAMA_BLUR_GAIN " + ShaderVariants.Float(Focus.BlurGain) + "\n"
-                    + "#define DIORAMA_FOLLOW_TIME " + ShaderVariants.Float(Focus.FollowTime) + "\n"
+                    + "cbuffer LookConstants : register(b" + ConstantsSlot + ")\n"
+                    + "{\n"
+                    + "    float4 LookAxisX;        // grid X axis, in world axes; w: texel size (m)\n"
+                    + "    float4 LookAxisY;        // grid Y axis; w: smallest texel on screen (px)\n"
+                    + "    float4 LookAxisZ;        // grid Z axis; w: colour boost (0 to 1)\n"
+                    + "    float4 LookCamera;       // camera in the grid frame, wrapped; w: near limit (m)\n"
+                    + "    float4 LookBoxMin;       // grid box, relative to the camera, in grid axes; w: 1 if a grid\n"
+                    + "    float4 LookBoxMax;       // grid box, relative to the camera, in grid axes\n"
+                    + "    float4 LookAroundX;      // surroundings X axis (gravity or world), in world axes\n"
+                    + "    float4 LookAroundY;      // surroundings Y axis\n"
+                    + "    float4 LookAroundZ;      // surroundings Z axis\n"
+                    + "    float4 LookAroundCamera; // camera in the surroundings frame, wrapped\n"
+                    + "};\n"
+                    + "\n"
+                    + "#define LOOK_MAX_LEVEL " + TexelGrid.MaxLevel + "\n"
                     + Body;
             }
         }
 
         private const string Header =
-@"// Sir Diorama: big pixels and miniature look, in the manner of The Touryst.
+@"// Sir Diorama: the world in the manner of Minecraft.
 // Variant of Postprocess/Tonemapping/Main.hlsl, written by the plugin at every
 // game start and compiled by the game itself. Do not edit by hand.
 //
-// For every big pixel: miniature blur in HDR (lights spread into discs), then
-// the game's own final colours (exposure, bloom, filmic curve, colour
-// filters), then the reduced palette with its ordered dither, in sRGB.
+// Every surface is cut into square texels fastened to the world (inside the
+// box of the ship or station nearby, to that grid, block edges on texel
+// edges; everywhere else, to the planet's vertical or the world axes): each
+// texel shows one plain
+// colour, the average light of the surface over it. Then the game's own final
+// colours, and a touch of extra saturation.
 
 ";
 
         private const string Body =
 @"
-#ifndef DIORAMA_PIXELS
-#define DIORAMA_PIXELS 1
-#endif
-#ifndef DIORAMA_PIXEL_SIZE
-#define DIORAMA_PIXEL_SIZE 4
-#endif
-#ifndef DIORAMA_LEVELS_R
-#define DIORAMA_LEVELS_R 3
-#endif
-#ifndef DIORAMA_LEVELS_G
-#define DIORAMA_LEVELS_G 3
-#endif
-#ifndef DIORAMA_LEVELS_B
-#define DIORAMA_LEVELS_B 3
-#endif
-#ifndef DIORAMA_MINIATURE
-#define DIORAMA_MINIATURE 1
-#endif
-#ifndef DIORAMA_BLUR_RADIUS
-#define DIORAMA_BLUR_RADIUS 0.015f
-#endif
-#ifndef DIORAMA_TAPS
-#define DIORAMA_TAPS 60
-#endif
-
-#if DIORAMA_PIXELS
-#define DIORAMA_N DIORAMA_PIXEL_SIZE
-#else
-#define DIORAMA_N 1
-#endif
-
-#define DIORAMA_GOLDEN_ANGLE 2.39996323f
-#define DIORAMA_GROUP_SIZE (NUMTHREADS_X * NUMTHREADS_Y)
-
-// One entry per big pixel of the group: a group of 8x8 screen pixels covers
-// at most 8x8 big pixels (size 1) and 4x4 of them for any larger size.
-groupshared float4 DioramaTile[DIORAMA_GROUP_SIZE];
-groupshared float DioramaFocusShared;
-
-// Area that the source, the depth and the screen all cover, in pixels.
-struct DioramaView
+// Sizes of the pass: the last pixel that the source and the depth both hold.
+struct LookView
 {
-    float2 size;
-    float2 sourceInverse;
+    int2 last;
 };
 
-DioramaView DioramaGetView()
+LookView LookGetView()
 {
     uint sourceWidth, sourceHeight, depthWidth, depthHeight;
     Source.GetDimensions(sourceWidth, sourceHeight);
-    DioramaDepth.GetDimensions(depthWidth, depthHeight);
+    LookDepth.GetDimensions(depthWidth, depthHeight);
 
-    DioramaView view;
-    view.size = min(min(float2(sourceWidth, sourceHeight), float2(depthWidth, depthHeight)), frame_.Screen.resolution);
-    view.sourceInverse = 1.0f / float2(sourceWidth, sourceHeight);
+    LookView view;
+    view.last = int2(
+        min(min(sourceWidth, depthWidth), (uint)frame_.Screen.resolution.x),
+        min(min(sourceHeight, depthHeight), (uint)frame_.Screen.resolution.y)) - 1;
     return view;
 }
 
-float2 DioramaClamp(float2 position, DioramaView view)
+// Distance along the view, in metres. Zero for the sky, which has no depth.
+float LookDepthAt(int2 pixel, LookView view)
 {
-    return clamp(position, 0.5f, view.size - 0.5f);
+    float hw = LookDepth[clamp(pixel, int2(0, 0), view.last)];
+    return IsDepthForeground(hw) ? compute_depth(hw) : 0.0f;
 }
 
-// Distance along the view, in metres. The sky has no depth: it is as far as
-// anything can be.
-float DioramaDistance(float2 position, DioramaView view)
+// Position relative to the camera, in world axes, of the point seen at this
+// screen position and at this view distance.
+float3 LookPosition(float2 screen, float depth)
 {
-    float hw = DioramaDepth[uint2(DioramaClamp(position, view))];
-    if (!IsDepthForeground(hw))
-        return DIORAMA_FAR;
-    return clamp(compute_depth(hw), DIORAMA_NEAR, DIORAMA_FAR);
+    float3 ray = compute_screen_ray(screen / frame_.Screen.resolution);
+    return depth * view_to_world(ray);
 }
 
-// The HDR scene, bilinear, before any exposure.
-float3 DioramaSample(float2 position, DioramaView view)
+// Screen position (xy, in pixels) and view distance (z) of a position
+// relative to the camera. z is zero behind the camera.
+float3 LookProject(float3 position)
 {
-    return Source.SampleLevel(BilinearSampler, DioramaClamp(position, view) * view.sourceInverse, 0).xyz;
+    float4 clip = mul(float4(position, 1.0f), frame_.Environment.view_projection_matrix);
+    if (!(clip.w > 0.0f))
+        return float3(-1.0f, -1.0f, 0.0f);
+    float2 uv = clip.xy / clip.w * float2(0.5f, -0.5f) + 0.5f;
+    return float3(uv * frame_.Screen.resolution, clip.w);
 }
 
-// Average of one big pixel. For sizes 2 and 4 the four bilinear taps cover it
-// exactly; for the other sizes they cover it evenly.
-float3 DioramaBlock(float2 centre, DioramaView view)
+// Plain colour of the texel that holds this pixel, in HDR. The original
+// colour is kept for the sky, and wherever the texel cannot be read.
+float3 LookTexel(uint2 texel, LookView view, float3 original)
 {
-#if DIORAMA_N == 1
-    return DioramaSample(centre, view);
-#else
-    const float o = DIORAMA_N * 0.25f;
-    return 0.25f * (DioramaSample(centre + float2(-o, -o), view) + DioramaSample(centre + float2(o, -o), view)
-        + DioramaSample(centre + float2(-o, o), view) + DioramaSample(centre + float2(o, o), view));
-#endif
-}
+    int2 pixel = int2(texel);
+    float depth = LookDepthAt(pixel, view);
+    if (!(depth > 0.0f))
+        return original;
 
-// Circle of confusion, in pixels. A ratio of distances, never metres: the
-// look is the same whether the focus is at one metre or at ten kilometres.
-float DioramaBlurRadius(float viewDistance, float focus, float maxRadius)
-{
-    float ratio = abs(1.0f - focus / viewDistance);
-    return maxRadius * saturate((ratio - DIORAMA_SHARP_BAND) * DIORAMA_BLUR_GAIN);
-}
+    float2 centre = float2(texel) + 0.5f;
+    float3 position = LookPosition(centre, depth);
+    float distance = length(position);
 
-float DioramaMedian3(float a, float b, float c)
-{
-    return max(min(a, b), min(max(a, b), c));
-}
+    // Normal of the surface, from the neighbouring depths: on each axis the
+    // side where the depth changes least, so that no edge is crossed.
+    float dl = LookDepthAt(pixel - int2(1, 0), view);
+    float dr = LookDepthAt(pixel + int2(1, 0), view);
+    float du = LookDepthAt(pixel - int2(0, 1), view);
+    float dd = LookDepthAt(pixel + int2(0, 1), view);
+    float gapL = dl > 0.0f ? abs(dl - depth) : 1e30f;
+    float gapR = dr > 0.0f ? abs(dr - depth) : 1e30f;
+    float gapU = du > 0.0f ? abs(du - depth) : 1e30f;
+    float gapD = dd > 0.0f ? abs(dd - depth) : 1e30f;
+    float stepX = min(gapL, gapR);
+    float stepY = min(gapU, gapD);
+    if (stepX >= 1e30f || stepY >= 1e30f)
+        return original;
 
-// Distance at the centre of the screen, as log2: the median of five samples,
-// so that a single pixel on the edge of an object does not pull the focus.
-float DioramaFocusTarget(DioramaView view)
-{
-    float2 c = view.size * 0.5f;
-    float o = 0.01f * view.size.y;
-    float a = log2(DioramaDistance(c + float2(-o, 0), view));
-    float b = log2(DioramaDistance(c + float2(o, 0), view));
-    float d = log2(DioramaDistance(c + float2(0, -o), view));
-    float e = log2(DioramaDistance(c + float2(0, o), view));
-    float m = log2(DioramaDistance(c, view));
-    return DioramaMedian3(m, max(min(a, b), min(d, e)), min(max(a, b), max(d, e)));
-}
+    float3 alongX = gapR < gapL
+        ? LookPosition(centre + float2(1.0f, 0.0f), dr) - position
+        : position - LookPosition(centre - float2(1.0f, 0.0f), dl);
+    float3 alongY = gapD < gapU
+        ? LookPosition(centre + float2(0.0f, 1.0f), dd) - position
+        : position - LookPosition(centre - float2(0.0f, 1.0f), du);
+    float3 normal = cross(alongX, alongY);
+    float normalLength = length(normal);
+    if (!(normalLength > 0.0f))
+        return original;
+    normal /= normalLength;
 
-// Eases from the previous frame's focus towards the target, whatever the
-// frame rate. Without a valid previous value, straight to the target.
-float DioramaFollow(float2 previous, float target)
-{
-    if (!(previous.y > 0.5f) || !(abs(previous.x) < 40.0f))
-        return target;
-    float t = 1.0f - exp(-max(frame_.frameTimeDelta, 0.0f) / DIORAMA_FOLLOW_TIME);
-    return previous.x + (target - previous.x) * t;
-}
-
-// Miniature blur, gathered in HDR around the centre of the big pixel. The
-// taps sit on a golden angle spiral that fills a disc evenly. A tap counts
-// when its own blur reaches the centre: a blurred foreground spreads over a
-// sharp background, and a background never bleeds onto a sharper foreground.
-// A bright light seen out of focus is reached from everywhere within its own
-// blur radius: it spreads into a disc.
-float3 DioramaGather(float2 centre, float focus, DioramaView view)
-{
-    float3 sharp = DioramaBlock(centre, view);
-#if DIORAMA_MINIATURE
-    float maxRadius = DIORAMA_BLUR_RADIUS * frame_.Screen.resolution.y;
-    if (maxRadius < 0.5f)
-        return sharp;
-
-    float centreDistance = DioramaDistance(centre, view);
-    float centreRadius = DioramaBlurRadius(centreDistance, focus, maxRadius);
-    float spacing = maxRadius * rsqrt((float)DIORAMA_TAPS);
-
-    float3 sum = sharp;
-    float count = 1.0f;
-    float2 direction = float2(1.0f, 0.0f);
-    const float2 turn = float2(cos(DIORAMA_GOLDEN_ANGLE), sin(DIORAMA_GOLDEN_ANGLE));
-
-    [loop]
-    for (int k = 0; k < DIORAMA_TAPS; k++)
+    // The frame the texels are fastened to: the camera itself very close to
+    // it (the tool in hand); the grid near the player for the points inside
+    // its box (one block of margin included); the surroundings (gravity or
+    // world) for everything else, so that the ground and the asteroids keep
+    // their texels while the ship flies.
+    float3x3 axes;
+    float3 camera;
+    float3x3 gridAxes = float3x3(LookAxisX.xyz, LookAxisY.xyz, LookAxisZ.xyz);
+    float3 inGrid = mul(gridAxes, position);
+    bool onGrid = LookBoxMin.w > 0.5f && all(inGrid >= LookBoxMin.xyz) && all(inGrid <= LookBoxMax.xyz);
+    if (distance < LookCamera.w)
     {
-        float r = maxRadius * sqrt((k + 0.5f) / DIORAMA_TAPS);
-        float2 position = centre + direction * r;
-        direction = float2(direction.x * turn.x - direction.y * turn.y, direction.x * turn.y + direction.y * turn.x);
+        axes = transpose((float3x3)frame_.Environment.view_matrix);
+        camera = float3(0.0f, 0.0f, 0.0f);
+    }
+    else if (onGrid)
+    {
+        axes = gridAxes;
+        camera = LookCamera.xyz;
+    }
+    else
+    {
+        axes = float3x3(LookAroundX.xyz, LookAroundY.xyz, LookAroundZ.xyz);
+        camera = LookAroundCamera.xyz;
+    }
+    float3 n = mul(axes, normal);
+    float3 a = mul(axes, position) + camera;
 
-        float tapDistance = DioramaDistance(position, view);
-        float radius = DioramaBlurRadius(tapDistance, focus, maxRadius);
-        if (tapDistance > centreDistance)
-            radius = min(radius, centreRadius * 2.0f);
+    // The texels lie along the two frame axes closest to the surface. Near a
+    // tie (a 45 degree slope), up first, then X: never a mix of both.
+    float3 weight = abs(n) + float3(0.02f, 0.05f, 0.0f);
+    float3 en, eu, ev;
+    if (weight.y >= weight.x && weight.y >= weight.z)
+    {
+        en = float3(0.0f, 1.0f, 0.0f); eu = float3(1.0f, 0.0f, 0.0f); ev = float3(0.0f, 0.0f, 1.0f);
+    }
+    else if (weight.x >= weight.z)
+    {
+        en = float3(1.0f, 0.0f, 0.0f); eu = float3(0.0f, 1.0f, 0.0f); ev = float3(0.0f, 0.0f, 1.0f);
+    }
+    else
+    {
+        en = float3(0.0f, 0.0f, 1.0f); eu = float3(1.0f, 0.0f, 0.0f); ev = float3(0.0f, 1.0f, 0.0f);
+    }
+    float an = dot(a, en), au = dot(a, eu), av = dot(a, ev);
+    float nn = dot(n, en), nu = dot(n, eu), nv = dot(n, ev);
 
-        float weight = smoothstep(r - spacing, r + spacing, radius);
-        sum += lerp(sum / count, DioramaSample(position, view), weight);
+    // Texel size: doubled far away until a texel covers at least the
+    // smallest size on screen (a surface seen at a grazing angle counts as
+    // farther). Powers of two: coarse texels fall exactly on fine ones.
+    float pixelAngle = 2.0f / (abs(frame_.Environment.projection_matrix._22) * frame_.Screen.resolution.y);
+    float facing = max(abs(dot(normal, position)) / max(distance, 1e-6f), 0.3f);
+    float needed = LookAxisY.w * distance * pixelAngle / facing;
+    float level = clamp(ceil(log2(max(needed / LookAxisX.w, 1.0f))), 0.0f, (float)LOOK_MAX_LEVEL);
+    float size = LookAxisX.w * exp2(level);
+
+    // Centre of the texel, then nine taps over it (3 x 3), all on the plane
+    // of the surface. A tap counts if what is really seen there lies on that plane
+    // (not something in front, not past an edge): the texel shows the
+    // average of those. Half a texel of relief is allowed (rough ground).
+    float cu = (floor(au / size) + 0.5f) * size;
+    float cv = (floor(av / size) + 0.5f) * size;
+    float third = size / 3.0f;
+    float tolerance = 0.25f * size + 0.001f * distance;
+
+    float3 sum = float3(0.0f, 0.0f, 0.0f);
+    float count = 0.0f;
+    [unroll]
+    for (int i = 0; i < 9; i++)
+    {
+        float tu = cu + (float)(i % 3 - 1) * third;
+        float tv = cv + (float)(i / 3 - 1) * third;
+        float tn = an - (nu * (tu - au) + nv * (tv - av)) / nn;
+        float3 tap = en * tn + eu * tu + ev * tv;
+        float3 screen = LookProject(mul(tap - camera, axes));
+        if (!(screen.z > 0.0f))
+            continue;
+        if (screen.x < 0.0f || screen.y < 0.0f || screen.x >= view.last.x + 1.0f || screen.y >= view.last.y + 1.0f)
+            continue;
+        int2 hit = int2(screen.xy);
+        float tapDepth = LookDepthAt(hit, view);
+        if (!(tapDepth > 0.0f))
+            continue;
+        float3 seen = LookPosition(float2(hit) + 0.5f, tapDepth);
+        if (abs(dot(seen - position, normal)) > tolerance)
+            continue;
+        sum += Source[hit].xyz;
         count += 1.0f;
     }
-    return sum / count;
-#else
-    return sharp;
-#endif
+    return count > 0.0f ? sum / count : original;
 }
 
-// Linear light of one sRGB channel, as Math/Color.hlsli computes it.
-float DioramaLinear(float s)
+[numthreads(NUMTHREADS_X, NUMTHREADS_Y, 1)]
+void __compute_shader(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    return s <= 0.04045f ? s / 12.92f : pow((s + 0.055f) / 1.055f, 2.4f);
-}
+    uint2 texel = dispatchThreadID.xy;
+    float2 uv = (texel + 0.5f) / frame_.Screen.resolution;
+    LookView view = LookGetView();
 
-// One sRGB channel on evenly spaced levels. Between the level below and the
-// level above, the Bayer threshold (1/16 to 16/16) picks one: the share of big
-// pixels taking the upper level is rounded DOWN, in linear light, so an area
-// is never brighter than its original colour. Black stays black.
-float DioramaQuantize(float value, float levels, float threshold)
-{
-    float steps = levels - 1.0f;
-    float lower = floor(saturate(value) * steps);
-    if (lower >= steps)
-        return 1.0f;
-    float low = lower / steps;
-    float high = (lower + 1.0f) / steps;
-    float share = (DioramaLinear(saturate(value)) - DioramaLinear(low)) / (DioramaLinear(high) - DioramaLinear(low));
-    return share >= threshold ? high : low;
-}
+    float3 sourceSample = Source[texel].xyz;
+    if (all(int2(texel) <= view.last))
+        sourceSample = LookTexel(texel, view, sourceSample);
 
-static const float DioramaBayer[16] =
-{
-    0, 8, 2, 10,
-    12, 4, 14, 6,
-    3, 11, 1, 9,
-    15, 7, 13, 5
-};
-
-// The threshold depends on the position of the big pixel alone, never on
-// time: the dither does not flicker while nothing moves.
-float3 DioramaPalette(float3 srgb, uint2 block)
-{
-    float threshold = (DioramaBayer[(block.y & 3) * 4 + (block.x & 3)] + 1.0f) / 16.0f;
-    return float3(
-        DioramaQuantize(srgb.r, DIORAMA_LEVELS_R, threshold),
-        DioramaQuantize(srgb.g, DIORAMA_LEVELS_G, threshold),
-        DioramaQuantize(srgb.b, DIORAMA_LEVELS_B, threshold));
-}
-
-// Final colour of one big pixel, as the game computes a pixel
-// (Postprocess/Tonemapping/Main.hlsl), from the blurred HDR colour.
-float4 DioramaShade(uint2 block, float focus, DioramaView view)
-{
-    float2 centre = (float2(block) + 0.5f) * DIORAMA_N;
-    float2 uv = centre / frame_.Screen.resolution;
-
-    float3 sourceSample = DioramaGather(centre, focus, view);
-
-#if !DIORAMA_PIXELS
-    // The game's film grain, only without big pixels: it changes every frame,
-    // and would make the dither flicker.
-    uint2 texel = block;
-    if (frame_.Post.GrainStrength > 0)
-    {
-        RandomGenerator random;
-        float grainRounding = 1;
-        if (frame_.Post.GrainSize > 0)
-        {
-            int gs = frame_.Post.GrainSize * 2 + 1;
-            float2 grainDist = (float2)(texel % gs) - frame_.Post.GrainSize;
-            grainRounding = 1 - dot(grainDist, grainDist) / (frame_.Post.GrainSize * frame_.Post.GrainSize * 2.0f);
-            random.SetSeed(((texel.x + gs) / gs)*((texel.y + gs) / gs)*int(frame_.frameTime*1000));
-        }
-        else random.SetSeed(texel.x * texel.y * int(frame_.frameTime*1000));
-        sourceSample -= saturate(frame_.Post.GrainAmount - random.GetFloat()) * grainRounding * frame_.Post.GrainStrength;
-    }
-#endif
-
+    // No film grain: it changes every frame and would stir the plain texels.
     float3 color = sourceSample;
 
 #ifndef DISABLE_TONEMAPPING
@@ -327,55 +280,19 @@ float4 DioramaShade(uint2 block, float focus, DioramaView view)
     color = SepiaFilter(color);
 #endif
 
+    // Extra saturation around the luminance: plain, bright colours. The
+    // luminance itself is unchanged.
+    float luminance = dot(color, float3(0.2126f, 0.7152f, 0.0722f));
+    color = max(luminance + (color - luminance) * (1.0f + LookAxisZ.w), 0.0f);
+
     color = saturate(color);
     color = rgb_to_srgb(color);
 
-#if DIORAMA_PIXELS
-    color = DioramaPalette(color, block);
-#endif
-
 #ifdef FILL_ALPHA_LUMINANCE
-    return float4(color, GetRelativeLuminance(color));
+    Destination[texel] = float4(color, GetRelativeLuminance(color));
 #else
-    return float4(color, 1);
+    Destination[texel] = float4(color, 1);
 #endif
-}
-
-[numthreads(NUMTHREADS_X, NUMTHREADS_Y, 1)]
-void __compute_shader(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
-{
-    DioramaView view = DioramaGetView();
-    uint localIndex = groupThreadID.y * NUMTHREADS_X + groupThreadID.x;
-
-    // Focus, once per group; the first group keeps it for the next frame.
-    float focus = DIORAMA_FAR;
-#if DIORAMA_MINIATURE
-    if (localIndex == 0)
-    {
-        float next = DioramaFollow(DioramaFocusIn[0], DioramaFocusTarget(view));
-        DioramaFocusShared = next;
-        if (groupID.x == 0 && groupID.y == 0)
-            DioramaFocusOut[0] = float2(next, 1.0f);
-    }
-    GroupMemoryBarrierWithGroupSync();
-    focus = exp2(DioramaFocusShared);
-#endif
-
-    // Each big pixel touched by this group is computed once, by one thread.
-    uint2 tileOrigin = groupID.xy * uint2(NUMTHREADS_X, NUMTHREADS_Y);
-    uint2 firstBlock = tileOrigin / DIORAMA_N;
-    uint2 lastBlock = (tileOrigin + uint2(NUMTHREADS_X, NUMTHREADS_Y) - 1) / DIORAMA_N;
-    uint2 blocks = lastBlock - firstBlock + 1;
-    if (localIndex < blocks.x * blocks.y)
-    {
-        uint2 block = firstBlock + uint2(localIndex % blocks.x, localIndex / blocks.x);
-        DioramaTile[localIndex] = DioramaShade(block, focus, view);
-    }
-    GroupMemoryBarrierWithGroupSync();
-
-    uint2 texel = dispatchThreadID.xy;
-    uint2 mine = texel / DIORAMA_N - firstBlock;
-    Destination[texel] = DioramaTile[mine.y * blocks.x + mine.x];
 }
 ";
     }

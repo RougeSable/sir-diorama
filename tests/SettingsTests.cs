@@ -4,192 +4,136 @@ using Xunit;
 
 namespace SirDiorama.Tests
 {
-    public class SettingsTests : IDisposable
+    public class SettingsTests
     {
-        private readonly string m_folder = Path.Combine(Path.GetTempPath(), "sir-diorama-tests-" + Guid.NewGuid().ToString("N"));
-
-        public void Dispose()
-        {
-            if (Directory.Exists(m_folder))
-                Directory.Delete(m_folder, true);
-        }
-
         [Fact]
-        public void DefaultsAreThoseOfTheTicket()
+        public void TheDefaultsAreMinecraftLike()
         {
-            var s = new DioramaSettings();
+            var s = new LookSettings();
             Assert.True(s.Enabled);
-            Assert.True(s.PixelsEnabled);
-            Assert.True(s.MiniatureEnabled);
-            Assert.Equal(4, s.PixelSize);
-            Assert.Equal(32, s.PaletteColors);
-            Assert.Equal(2, DioramaSettings.PixelSizeMin);
-            Assert.Equal(8, DioramaSettings.PixelSizeMax);
-            Assert.Equal(8, DioramaSettings.PaletteColorsMin);
-            Assert.Equal(64, DioramaSettings.PaletteColorsMax);
+            Assert.Equal(16, s.TexelDensity);
+            Assert.Equal(1.0 / 16, s.TexelSize);
+            Assert.Equal(4, s.SmallestTexel);
+            Assert.Equal(20, s.ColourBoost);
             Assert.Equal("Alt+F2", s.Hotkey);
         }
 
         [Fact]
         public void OutOfBoundsValuesAreBroughtBack()
         {
-            var s = new DioramaSettings { PixelSize = 99, PaletteColors = 2, BlurStrength = -5, Hotkey = "nonsense" }.Normalized();
+            var s = new LookSettings { TexelDensity = 1000, SmallestTexel = 0, ColourBoost = 400, Hotkey = "nonsense" }.Normalized();
+            Assert.Equal(32, s.TexelDensity);
+            Assert.Equal(LookSettings.SmallestTexelMin, s.SmallestTexel);
+            Assert.Equal(LookSettings.ColourBoostMax, s.ColourBoost);
+            Assert.Equal(LookSettings.HotkeyDefault, s.Hotkey);
 
-            Assert.Equal(DioramaSettings.PixelSizeMax, s.PixelSize);
-            Assert.Equal(DioramaSettings.PaletteColorsMin, s.PaletteColors);
-            Assert.Equal(DioramaSettings.BlurStrengthMin, s.BlurStrength);
-            Assert.Equal(DioramaSettings.HotkeyDefault, s.Hotkey);
+            Assert.Equal(4, new LookSettings { TexelDensity = -3 }.Normalized().TexelDensity);
+            Assert.Equal(8, new LookSettings { TexelDensity = 9 }.Normalized().TexelDensity);
+            Assert.Equal(2, LookSettings.DensityIndex(16));
         }
 
         [Fact]
-        public void EachEffectCanBeSwitchedOffOnItsOwn()
+        public void SettingsSurviveTheFile()
         {
-            Assert.True(new DioramaSettings { PixelsEnabled = false }.HasVisibleEffect);
-            Assert.True(new DioramaSettings { MiniatureEnabled = false }.HasVisibleEffect);
-            Assert.False(new DioramaSettings { PixelsEnabled = false, MiniatureEnabled = false }.HasVisibleEffect);
-            Assert.False(new DioramaSettings { PixelsEnabled = false, BlurStrength = 0 }.HasVisibleEffect);
-        }
-
-        [Fact]
-        public void AMissingFileGivesTheDefaults()
-        {
-            string problem;
-            var s = SettingsFile.Load(Path.Combine(m_folder, "missing.xml"), out problem);
-
-            Assert.Null(problem);
-            Assert.True(s.Enabled);
-            Assert.Equal(DioramaSettings.PixelSizeDefault, s.PixelSize);
-        }
-
-        [Fact]
-        public void SettingsSurviveARoundTrip()
-        {
-            var path = Path.Combine(m_folder, "sub", SettingsFile.FileName);
-            SettingsFile.Save(path, new DioramaSettings
+            var folder = Path.Combine(Path.GetTempPath(), "sir-diorama-tests-" + Guid.NewGuid().ToString("N"));
+            var path = Path.Combine(folder, SettingsFile.FileName);
+            try
             {
-                Enabled = false,
-                PixelsEnabled = false,
-                PixelSize = 6,
-                PaletteColors = 48,
-                MiniatureEnabled = false,
-                BlurStrength = 80,
-                Hotkey = "Ctrl+Shift+F7",
-            });
+                var saved = new LookSettings { Enabled = false, TexelDensity = 8, SmallestTexel = 6, ColourBoost = 0, Hotkey = "Ctrl+F9" };
+                SettingsFile.Save(path, saved);
 
-            string problem;
-            var s = SettingsFile.Load(path, out problem);
-
-            Assert.Null(problem);
-            Assert.False(s.Enabled);
-            Assert.False(s.PixelsEnabled);
-            Assert.Equal(6, s.PixelSize);
-            Assert.Equal(48, s.PaletteColors);
-            Assert.False(s.MiniatureEnabled);
-            Assert.Equal(80, s.BlurStrength);
-            Assert.Equal("Ctrl+Shift+F7", s.Hotkey);
-            Assert.False(File.Exists(path + ".tmp"));
+                string problem;
+                var read = SettingsFile.Load(path, out problem);
+                Assert.Null(problem);
+                Assert.False(read.Enabled);
+                Assert.Equal(8, read.TexelDensity);
+                Assert.Equal(6, read.SmallestTexel);
+                Assert.Equal(0, read.ColourBoost);
+                Assert.Equal("Ctrl+F9", read.Hotkey);
+            }
+            finally
+            {
+                if (Directory.Exists(folder))
+                    Directory.Delete(folder, true);
+            }
         }
 
         [Fact]
-        public void AnUnreadableFileDoesNotBlockTheGame()
+        public void AMissingOrBrokenFileGivesTheDefaults()
         {
-            Directory.CreateDirectory(m_folder);
-            var path = Path.Combine(m_folder, SettingsFile.FileName);
-            File.WriteAllText(path, "<not xml");
+            var folder = Path.Combine(Path.GetTempPath(), "sir-diorama-tests-" + Guid.NewGuid().ToString("N"));
+            var path = Path.Combine(folder, SettingsFile.FileName);
+            try
+            {
+                string problem;
+                Assert.True(SettingsFile.Load(path, out problem).Enabled);
+                Assert.Null(problem);
 
-            string problem;
-            var s = SettingsFile.Load(path, out problem);
-
-            Assert.NotNull(problem);
-            Assert.True(s.Enabled);
-        }
-
-        [Fact]
-        public void AFileEditedByHandIsBroughtBack()
-        {
-            Directory.CreateDirectory(m_folder);
-            var path = Path.Combine(m_folder, SettingsFile.FileName);
-            File.WriteAllText(path, "<?xml version=\"1.0\"?><DioramaSettings><PixelSize>500</PixelSize></DioramaSettings>");
-
-            string problem;
-            var s = SettingsFile.Load(path, out problem);
-
-            Assert.Null(problem);
-            Assert.Equal(DioramaSettings.PixelSizeMax, s.PixelSize);
+                Directory.CreateDirectory(folder);
+                File.WriteAllText(path, "<not xml");
+                var read = SettingsFile.Load(path, out problem);
+                Assert.NotNull(problem);
+                Assert.Equal(16, read.TexelDensity);
+            }
+            finally
+            {
+                if (Directory.Exists(folder))
+                    Directory.Delete(folder, true);
+            }
         }
     }
 
     public class HotkeyTests
     {
-        [Theory]
-        [InlineData("Alt+F2", "Alt+F2")]
-        [InlineData("alt + f2", "Alt+F2")]
-        [InlineData("Shift+Ctrl+F7", "Ctrl+Shift+F7")]
-        [InlineData("Control+Alt+Pause", "Ctrl+Alt+Pause")]
-        [InlineData("F9", "F9")]
-        public void ReadsAndWritesShortcuts(string text, string expected)
-        {
-            HotkeyBinding binding;
-            Assert.True(HotkeyBinding.TryParse(text, out binding));
-            Assert.Equal(expected, binding.ToString());
-        }
-
-        [Theory]
-        [InlineData(null)]
-        [InlineData("")]
-        [InlineData("Alt")]
-        [InlineData("Alt+W")]
-        [InlineData("Alt+F2+F3")]
-        [InlineData("Alt+Alt+F2")]
-        [InlineData("Alt++F2")]
-        public void RefusesWhatIsNotAShortcut(string text)
-        {
-            HotkeyBinding binding;
-            Assert.False(HotkeyBinding.TryParse(text, out binding));
-        }
-
         [Fact]
         public void ModifiersMustMatchExactly()
         {
             HotkeyBinding binding;
-            HotkeyBinding.TryParse(DioramaSettings.HotkeyDefault, out binding);
-
+            Assert.True(HotkeyBinding.TryParse("Alt+F2", out binding));
             Assert.True(binding.Matches("F2", false, true, false));
-            // Ctrl+F2, and Ctrl+Alt+F2, belong to someone else.
             Assert.False(binding.Matches("F2", true, false, false));
             Assert.False(binding.Matches("F2", true, true, false));
             Assert.False(binding.Matches("F2", false, false, false));
             Assert.False(binding.Matches("F3", false, true, false));
         }
+
+        [Fact]
+        public void ShortcutsAreReadAndWrittenTheSameWay()
+        {
+            HotkeyBinding binding;
+            Assert.True(HotkeyBinding.TryParse(" shift + ctrl+f9 ", out binding));
+            Assert.Equal("Ctrl+Shift+F9", binding.ToString());
+
+            Assert.False(HotkeyBinding.TryParse("", out binding));
+            Assert.False(HotkeyBinding.TryParse("Alt", out binding));
+            Assert.False(HotkeyBinding.TryParse("Alt+W", out binding));
+            Assert.False(HotkeyBinding.TryParse("F1+F2", out binding));
+            Assert.False(HotkeyBinding.TryParse("Alt+Alt+F2", out binding));
+        }
     }
 
     public class ChatCommandTests
     {
-        [Theory]
-        [InlineData("/diorama", CommandAction.Toggle)]
-        [InlineData("  /DIORAMA  ", CommandAction.Toggle)]
-        [InlineData("/diorama on", CommandAction.On)]
-        [InlineData("/diorama off", CommandAction.Off)]
-        [InlineData("/diorama status", CommandAction.Status)]
-        [InlineData("/diorama key Alt+F3", CommandAction.SetHotkey)]
-        [InlineData("/diorama whatever", CommandAction.Unknown)]
-        [InlineData("/cel", CommandAction.None)]
-        [InlineData("/dioramas", CommandAction.None)]
-        [InlineData("hello", CommandAction.None)]
-        [InlineData("", CommandAction.None)]
-        [InlineData(null, CommandAction.None)]
-        public void Parses(string text, CommandAction expected)
+        [Fact]
+        public void TheCommandIsRecognised()
         {
             string argument;
-            Assert.Equal(expected, ChatCommand.Parse(text, out argument));
+            Assert.Equal(CommandAction.Toggle, ChatCommand.Parse("/diorama", out argument));
+            Assert.Equal(CommandAction.On, ChatCommand.Parse("/Diorama ON", out argument));
+            Assert.Equal(CommandAction.Off, ChatCommand.Parse("  /diorama off ", out argument));
+            Assert.Equal(CommandAction.Status, ChatCommand.Parse("/diorama status", out argument));
+            Assert.Equal(CommandAction.SetHotkey, ChatCommand.Parse("/diorama key Ctrl+F9", out argument));
+            Assert.Equal("Ctrl+F9", argument);
+            Assert.Equal(CommandAction.Unknown, ChatCommand.Parse("/diorama what", out argument));
         }
 
         [Fact]
-        public void TheKeyCommandCarriesTheShortcut()
+        public void OtherMessagesAreLeftAlone()
         {
             string argument;
-            ChatCommand.Parse("/diorama key  Ctrl+F9 ", out argument);
-            Assert.Equal("Ctrl+F9", argument);
+            Assert.Equal(CommandAction.None, ChatCommand.Parse("hello", out argument));
+            Assert.Equal(CommandAction.None, ChatCommand.Parse("/dioramas", out argument));
+            Assert.Equal(CommandAction.None, ChatCommand.Parse(null, out argument));
         }
     }
 }

@@ -10,23 +10,23 @@ namespace SirDiorama
     {
         public const string FileName = "settings.xml";
 
-        private static readonly XmlSerializer Serializer = new XmlSerializer(typeof(DioramaSettings));
+        private static readonly XmlSerializer Serializer = new XmlSerializer(typeof(LookSettings));
 
-        public static DioramaSettings Load(string path, out string problem)
+        public static LookSettings Load(string path, out string problem)
         {
             problem = null;
             if (!File.Exists(path))
-                return new DioramaSettings();
+                return new LookSettings();
 
             try
             {
                 using (var stream = File.OpenRead(path))
                 {
-                    var read = Serializer.Deserialize(stream) as DioramaSettings;
+                    var read = Serializer.Deserialize(stream) as LookSettings;
                     if (read == null)
                     {
                         problem = "empty settings file";
-                        return new DioramaSettings();
+                        return new LookSettings();
                     }
                     return read.Normalized();
                 }
@@ -34,11 +34,11 @@ namespace SirDiorama
             catch (Exception e)
             {
                 problem = "unreadable settings file (" + e.Message + ")";
-                return new DioramaSettings();
+                return new LookSettings();
             }
         }
 
-        public static void Save(string path, DioramaSettings settings)
+        public static void Save(string path, LookSettings settings)
         {
             var folder = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(folder))

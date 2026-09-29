@@ -8,23 +8,22 @@ namespace SirDiorama
 {
     // The plugin's settings, opened from Pulsar. Every change applies to the
     // next frame and is saved at once: the player sees the effect behind the
-    // screen, without restarting the game.
+    // screen, without restarting the game. No setting compiles anything.
     internal sealed class SettingsScreen : MyGuiScreenBase
     {
         private const float Width = 0.62f;
-        private const float Height = 0.9f;
+        private const float Height = 0.72f;
         private const float LabelColumn = -0.27f;
         private const float ControlColumn = 0.10f;
         private const float ValueColumn = 0.27f;
         private const float LineHeight = 0.062f;
 
-        // A slider being dragged changes value at every notch, and every new
-        // value asks the game to compile the effect. We wait until the player
-        // pauses for a moment before applying.
-        private static readonly TimeSpan SliderDelay = TimeSpan.FromMilliseconds(400);
+        // A slider being dragged changes value at every notch; the file is
+        // written once the player pauses for a moment.
+        private static readonly TimeSpan SliderDelay = TimeSpan.FromMilliseconds(300);
 
         private readonly DioramaPlugin m_plugin;
-        private DioramaSettings m_settings;
+        private LookSettings m_settings;
         private DateTime? m_applyAt;
 
         private MyGuiControlCombobox m_hotkeyKey;
@@ -58,19 +57,16 @@ namespace SirDiorama
             AddCheckbox(Texts.EnableBox, Texts.EnableBoxHelp, y, m_settings.Enabled, v => m_settings.Enabled = v);
             y += LineHeight;
 
-            AddCheckbox(Texts.PixelsBox, Texts.PixelsBoxHelp, y, m_settings.PixelsEnabled, v => m_settings.PixelsEnabled = v);
+            AddSlider(Texts.TexelDensity, Texts.TexelDensityHelp, y, 0, LookSettings.TexelDensities.Length - 1,
+                LookSettings.DensityIndex(m_settings.TexelDensity),
+                v => m_settings.TexelDensity = LookSettings.TexelDensities[v],
+                v => Texts.DensityValue(LookSettings.TexelDensities[v]));
             y += LineHeight;
-            AddSlider(Texts.PixelSize, Texts.PixelSizeHelp, y, DioramaSettings.PixelSizeMin, DioramaSettings.PixelSizeMax,
-                m_settings.PixelSize, v => m_settings.PixelSize = v, v => v + " px");
+            AddSlider(Texts.SmallestTexel, Texts.SmallestTexelHelp, y, LookSettings.SmallestTexelMin, LookSettings.SmallestTexelMax,
+                m_settings.SmallestTexel, v => m_settings.SmallestTexel = v, v => v + " px");
             y += LineHeight;
-            AddSlider(Texts.PaletteColors, Texts.PaletteColorsHelp, y, DioramaSettings.PaletteColorsMin, DioramaSettings.PaletteColorsMax,
-                m_settings.PaletteColors, v => m_settings.PaletteColors = v, v => Texts.PaletteValue(v, Palette.LevelsFor(v)));
-            y += LineHeight;
-
-            AddCheckbox(Texts.MiniatureBox, Texts.MiniatureBoxHelp, y, m_settings.MiniatureEnabled, v => m_settings.MiniatureEnabled = v);
-            y += LineHeight;
-            AddSlider(Texts.BlurStrength, Texts.BlurStrengthHelp, y, DioramaSettings.BlurStrengthMin, DioramaSettings.BlurStrengthMax,
-                m_settings.BlurStrength, v => m_settings.BlurStrength = v, v => v + " %");
+            AddSlider(Texts.ColourBoost, Texts.ColourBoostHelp, y, LookSettings.ColourBoostMin, LookSettings.ColourBoostMax,
+                m_settings.ColourBoost, v => m_settings.ColourBoost = v, v => v + " %");
             y += LineHeight;
 
             AddHotkey(y);
@@ -86,7 +82,7 @@ namespace SirDiorama
                 onButtonClick: b =>
                 {
                     var enabled = m_settings.Enabled;
-                    m_settings = new DioramaSettings { Enabled = enabled };
+                    m_settings = new LookSettings { Enabled = enabled };
                     Apply();
                     RecreateControls(false);
                 }));
@@ -129,11 +125,18 @@ namespace SirDiorama
                 var v = (int)Math.Round(c.Value);
                 shown.Text = display(v);
                 set(v);
+                // Seen at once; saved once the slider rests.
+                FinalColourPassPreview();
                 m_applyAt = DateTime.UtcNow + SliderDelay;
             };
 
             Controls.Add(slider);
             Controls.Add(shown);
+        }
+
+        private void FinalColourPassPreview()
+        {
+            FinalColourPass.CurrentSettings = m_settings.Copy();
         }
 
         // The shortcut: one key, and its modifiers on the line below. It must
@@ -142,7 +145,7 @@ namespace SirDiorama
         {
             HotkeyBinding binding;
             if (!HotkeyBinding.TryParse(m_settings.Hotkey, out binding))
-                HotkeyBinding.TryParse(DioramaSettings.HotkeyDefault, out binding);
+                HotkeyBinding.TryParse(LookSettings.HotkeyDefault, out binding);
 
             AddLabel(Texts.Hotkey, Texts.HotkeyHelp, y);
             m_hotkeyKey = new MyGuiControlCombobox(new Vector2(ControlColumn, y), new Vector2(0.2f, 0.04f), toolTip: Texts.HotkeyHelp);
