@@ -1,0 +1,9 @@
+<Project>
+  <!--
+    Copy to Directory.Build.props (ignored by git), with the Bin64 folder of
+    Space Engineers on this machine.
+  -->
+  <PropertyGroup>
+    <Bin64>C:\Program Files (x86)\Steam\steamapps\common\SpaceEngineers\Bin64</Bin64>
+  </PropertyGroup>
+</Project>

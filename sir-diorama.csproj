@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Sir Diorama, a player side plugin for Space Engineers (Pulsar). Pulsar
+    compiles the Source folder itself; this project is for local builds.
+
+    Game path: the Bin64 value, else the SE_BIN64 variable, else the most
+    common Steam folders. For another place, copy
+    Directory.Build.props.example to Directory.Build.props.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>sir-diorama</AssemblyName>
+    <RootNamespace>SirDiorama</RootNamespace>
+    <LangVersion>7.3</LangVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Bin64)' == ''">
+    <Bin64>$(SE_BIN64)</Bin64>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Bin64)' == ''">
+    <Bin64 Condition="Exists('C:\Program Files (x86)\Steam\steamapps\common\SpaceEngineers\Bin64\Sandbox.Game.dll')">C:\Program Files (x86)\Steam\steamapps\common\SpaceEngineers\Bin64</Bin64>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Bin64)' == ''">
+    <Bin64 Condition="Exists('D:\SteamLibrary\steamapps\common\SpaceEngineers\Bin64\Sandbox.Game.dll')">D:\SteamLibrary\steamapps\common\SpaceEngineers\Bin64</Bin64>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Bin64)' == ''">
+    <Bin64 Condition="Exists('E:\SteamLibrary\steamapps\common\SpaceEngineers\Bin64\Sandbox.Game.dll')">E:\SteamLibrary\steamapps\common\SpaceEngineers\Bin64</Bin64>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Source\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <!-- Pulsar provides it to the game: it does not ship with the plugin. -->
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Sandbox.Game"><HintPath>$(Bin64)\Sandbox.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Graphics"><HintPath>$(Bin64)\Sandbox.Graphics.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Common"><HintPath>$(Bin64)\Sandbox.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage"><HintPath>$(Bin64)\VRage.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Game"><HintPath>$(Bin64)\VRage.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Input"><HintPath>$(Bin64)\VRage.Input.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Library"><HintPath>$(Bin64)\VRage.Library.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Math"><HintPath>$(Bin64)\VRage.Math.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Render"><HintPath>$(Bin64)\VRage.Render.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Render11"><HintPath>$(Bin64)\VRage.Render11.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SharpDX"><HintPath>$(Bin64)\SharpDX.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SharpDX.Direct3D11"><HintPath>$(Bin64)\SharpDX.Direct3D11.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SharpDX.D3DCompiler"><HintPath>$(Bin64)\SharpDX.D3DCompiler.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <Target Name="CheckTheGame" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(Bin64)\Sandbox.Game.dll')"
+           Text="Space Engineers not found (Bin64 = '$(Bin64)'). Give the path of Bin64: dotnet build -p:Bin64=..., the SE_BIN64 variable, or Directory.Build.props (see Directory.Build.props.example)." />
+  </Target>
+
+</Project>

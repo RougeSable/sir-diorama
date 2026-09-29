@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pulsar card of Sir Diorama: it carries the name Pulsar shows in its plugin
+  list (FriendlyName). Pulsar does not read it from this repository: a copy is
+  put in the catalogue at every release, with the released commit in Commit.
+  SourceDirectories limits the build to the Source folder, without the tests.
+-->
+<PluginData xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="GitHubPlugin">
+  <Id>RougeSable/sir-diorama</Id>
+  <FriendlyName>Sir Diorama</FriendlyName>
+  <Author>RougeSable</Author>
+  <Tooltip>The Touryst look: big pixels, reduced palette and miniature blur.</Tooltip>
+  <Description>Sir Diorama gives the game the look of The Touryst: the world drawn in big pixels with a reduced palette and a stable dither, like a miniature diorama. What you look at is sharp, the foreground and the distance are blurred, and out of focus lights spread into small discs. Each effect has its own settings (pixel size, palette colours, blur strength). Switch it on or off at any time with Alt+F2 (changeable), /diorama in the chat, or the plugin settings. The interface stays sharp and screenshots show the effect. Everything happens on your machine: players without the plugin see the game's rendering.</Description>
+  <Commit>0000000000000000000000000000000000000000</Commit>
+  <SourceDirectories>
+    <Directory>Source</Directory>
+  </SourceDirectories>
+</PluginData>
