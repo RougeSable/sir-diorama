@@ -146,7 +146,9 @@ namespace SirDiorama.Tests
                 1, 0, 0, 0.125f, 0, 1, 0, 5, 0, 0, 1, 0.4f, 1, 2, 3, 1.5f,
                 0, 0, 0, 0, 0, 0, 0, 0,
                 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 2, 3, 0,
-            }, values);
+            }, values.Take(LookConstants.ScreenStart).ToArray());
+            // No screen.
+            Assert.Equal(0, values[LookConstants.ScreenCountIndex]);
             // No grid: no point takes the grid's frame.
             Assert.False(LookConstants.TakesGridFrame(values, new Vec3d(0, 0, -1)));
         }

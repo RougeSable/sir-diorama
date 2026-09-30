@@ -12,9 +12,10 @@ namespace SirDiorama
         // Texel density on surfaces, in texels per metre. Powers of two only,
         // so that every texel edge falls on a block edge: 1/4 m divides the
         // half size of both a small block (0.5 m) and a large one (2.5 m).
-        // 16 per metre is Minecraft's own density (16 texels on a 1 m block).
+        // 8 per metre is the closest to Minecraft on screen, as measured in
+        // game: a large block is 20 texels wide, a small one 4.
         public static readonly int[] TexelDensities = { 4, 8, 16, 32 };
-        public const int TexelDensityDefault = 16;
+        public const int TexelDensityDefault = 8;
 
         // Far away, texels grow (by powers of two) so that none is smaller
         // than this many screen pixels.
@@ -23,10 +24,10 @@ namespace SirDiorama
         public const int SmallestTexelDefault = 4;
 
         // Extra colour saturation, in percent, for the bright and plain
-        // colours of Minecraft.
+        // colours of Minecraft (75 %, as measured in game).
         public const int ColourBoostMin = 0;
         public const int ColourBoostMax = 100;
-        public const int ColourBoostDefault = 20;
+        public const int ColourBoostDefault = 75;
 
         public const string HotkeyDefault = "Alt+F2";
 

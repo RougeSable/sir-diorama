@@ -62,8 +62,11 @@ namespace SirDiorama.Tests
             Assert.Contains("register(b" + ShaderSource.ConstantsSlot + ")", text);
             Assert.Contains("register(t" + ShaderSource.DepthSlot + ")", text);
             Assert.InRange(ShaderSource.ConstantsSlot, 1, 7);
-            // Ten float4, as the cbuffer declares them.
-            Assert.Equal(160, LookConstants.ByteSize);
+            // Ten float4, then three per screen, as the cbuffer declares them.
+            Assert.Equal((10 + 3 * LookConstants.MaxScreens) * 16, LookConstants.ByteSize);
+            Assert.Contains("float4 LookScreens[" + (3 * LookConstants.MaxScreens) + "];", text);
+            Assert.Equal(10 * 4, LookConstants.ScreenStart);
+            Assert.Equal(6 * 4 + 3, LookConstants.ScreenCountIndex);
             Assert.Equal(10, Regex.Matches(text, "^\\s*float4 Look\\w+;", RegexOptions.Multiline).Count);
             foreach (var header in ShaderSource.GameHeaders)
                 Assert.Contains("#include <" + header + ">", text);

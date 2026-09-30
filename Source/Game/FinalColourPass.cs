@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using VRageMath;
@@ -27,6 +28,7 @@ namespace SirDiorama
         // Snapshots replaced as a whole by the main thread.
         private static volatile LookSettings s_settings = new LookSettings();
         private static volatile Anchor s_anchor = Anchor.Default;
+        private static volatile ScreenSet s_screens = ScreenSet.Empty;
 
         public static LookSettings CurrentSettings
         {
@@ -40,12 +42,22 @@ namespace SirDiorama
             set { s_anchor = value ?? Anchor.Default; }
         }
 
+        // The LCD screens near the player, left as the game draws them.
+        public static ScreenSet CurrentScreens
+        {
+            get { return s_screens; }
+            set { s_screens = value ?? ScreenSet.Empty; }
+        }
+
         // The three variants, created by the game the first time each one is
         // needed, then kept for the session.
         private static readonly object[] s_variants = new object[ShaderVariants.VariantCount];
 
         private static object s_constants;
         private static readonly float[] s_values = new float[LookConstants.FloatCount];
+
+        // Grid poses read for the frame being drawn, by render object.
+        private static readonly Dictionary<uint, GridPose> s_poses = new Dictionary<uint, GridPose>();
 
         // What the prefix changed, for the postfix to give back.
         private static FieldInfo s_replacedField;
@@ -143,39 +155,68 @@ namespace SirDiorama
         }
 
         // The frames the texels are fastened to, for the very frame being
-        // drawn: the grid's matrix is read from the render thread's own copy,
-        // and the camera is the one of this frame. Everything is computed in
-        // double precision, then handed to the shader relative to the camera:
-        // the frame of the surroundings, and the grid's frame with its box,
-        // which only the points inside that box take.
+        // drawn: the grids' matrices are read from the render thread's own
+        // copy, and the camera is the one of this frame. Everything is
+        // computed in double precision, then handed to the shader relative to
+        // the camera: the frame of the surroundings, the grid's frame with its
+        // box, which only the points inside that box take, and the boxes of
+        // the LCD screens near the player.
         private static void FillConstants(LookSettings settings)
         {
+            s_poses.Clear();
             var anchor = s_anchor;
             var grid = anchor.Grid;
-            var origin = Vec3d.Zero;
-            var axisX = Vec3d.UnitX;
-            var axisY = Vec3d.UnitY;
-            var axisZ = Vec3d.UnitZ;
-
+            var pose = new GridPose(Vec3d.Zero, Vec3d.UnitX, Vec3d.UnitY, Vec3d.UnitZ);
             if (grid != null)
-            {
-                origin = grid.Origin;
-                axisX = grid.AxisX;
-                axisY = grid.AxisY;
-                axisZ = grid.AxisZ;
-
-                MatrixD matrix;
-                if (Engine.TryGetActorMatrix(grid.RenderObjectId, out matrix))
-                {
-                    origin = ToVec(matrix.Translation);
-                    axisX = ToVec(matrix.Right).Normalized();
-                    axisY = ToVec(matrix.Up).Normalized();
-                    axisZ = ToVec(matrix.Backward).Normalized();
-                }
-            }
+                pose = PoseOf(grid.RenderObjectId, new GridPose(grid.Origin, grid.AxisX, grid.AxisY, grid.AxisZ));
 
             var camera = ToVec(Engine.CameraPosition());
-            LookConstants.Pack(s_values, anchor, camera, origin, axisX, axisY, axisZ, settings);
+            LookConstants.Pack(s_values, anchor, camera, pose.Origin, pose.X, pose.Y, pose.Z, settings);
+
+            var count = 0;
+            foreach (var screen in s_screens.Screens)
+            {
+                var p = PoseOf(screen.GridRenderObjectId,
+                    new GridPose(screen.GridOrigin, screen.GridX, screen.GridY, screen.GridZ));
+                if (LookConstants.PackScreen(s_values, count, p.Origin, p.X, p.Y, p.Z, screen.Min, screen.Max, camera))
+                    count++;
+            }
+            LookConstants.SetScreenCount(s_values, count);
+        }
+
+        // Where a grid is drawn in this frame, read once per frame; the main
+        // thread's pose if the render thread does not know it.
+        private static GridPose PoseOf(uint renderObjectId, GridPose fallback)
+        {
+            GridPose pose;
+            if (s_poses.TryGetValue(renderObjectId, out pose))
+                return pose;
+
+            pose = fallback;
+            MatrixD matrix;
+            if (Engine.TryGetActorMatrix(renderObjectId, out matrix))
+            {
+                pose = new GridPose(ToVec(matrix.Translation), ToVec(matrix.Right).Normalized(),
+                    ToVec(matrix.Up).Normalized(), ToVec(matrix.Backward).Normalized());
+            }
+            s_poses[renderObjectId] = pose;
+            return pose;
+        }
+
+        private struct GridPose
+        {
+            public readonly Vec3d Origin;
+            public readonly Vec3d X;
+            public readonly Vec3d Y;
+            public readonly Vec3d Z;
+
+            public GridPose(Vec3d origin, Vec3d x, Vec3d y, Vec3d z)
+            {
+                Origin = origin;
+                X = x;
+                Y = y;
+                Z = z;
+            }
         }
 
         private static Vec3d ToVec(Vector3D v)

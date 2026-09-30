@@ -27,6 +27,9 @@ namespace SirDiorama
         // fastened to.
         private const int AnchorInterval = 10;
 
+        // How many updates between two looks for the LCD screens nearby.
+        private const int ScreenInterval = 30;
+
         private const string Step = "MyToneMapping.Run";
 
         private Harmony m_harmony;
@@ -34,11 +37,13 @@ namespace SirDiorama
         private SessionStop m_stop;
         private Coexistence m_coexistence;
         private readonly AnchorPicker m_anchors = new AnchorPicker();
+        private readonly ScreenPicker m_screens = new ScreenPicker();
         private string m_settingsPath;
         private bool m_patched;
         private bool m_commandHooked;
         private int m_coexistenceCounter;
         private int m_anchorCounter;
+        private int m_screenCounter;
 
         public static DioramaPlugin Instance { get; private set; }
 
@@ -184,6 +189,12 @@ namespace SirDiorama
                     m_anchorCounter = 0;
                     FinalColourPass.CurrentAnchor = m_anchors.Pick();
                 }
+
+                if (worldOpen && FinalColourPass.CurrentSettings.Enabled && ++m_screenCounter >= ScreenInterval)
+                {
+                    m_screenCounter = 0;
+                    FinalColourPass.CurrentScreens = m_screens.Pick();
+                }
             }
             catch (Exception e)
             {
@@ -274,6 +285,7 @@ namespace SirDiorama
         {
             FinalColourPass.CurrentSettings = settings;
             m_anchorCounter = AnchorInterval;
+            m_screenCounter = ScreenInterval;
             try
             {
                 SettingsFile.Save(m_settingsPath, FinalColourPass.CurrentSettings);

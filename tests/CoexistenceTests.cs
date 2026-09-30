@@ -9,6 +9,10 @@ namespace SirDiorama.Tests
     // which the tests cannot load: same method name, same place in the story.
     public static class ToneMappingStandIn
     {
+        // The tests that patch it run one after the other: a patch left by
+        // one would be seen as another plugin's by the next.
+        public const string Collection = "ToneMappingStandIn";
+
         public static int Calls;
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -25,7 +29,10 @@ namespace SirDiorama.Tests
         }
     }
 
-    public class CoexistenceTests
+    // The guard on the game's final colour pass (MyToneMapping.Run): two
+    // plugins never fight over it.
+    [Collection(ToneMappingStandIn.Collection)]
+    public class ToneMappingGuardTests
     {
         private const string Own = "sir-diorama";
         private const string Step = "MyToneMapping.Run";
@@ -36,7 +43,7 @@ namespace SirDiorama.Tests
         // for the session without touching anything, writes one line to the
         // game log, and tells the player which plugin keeps the step.
         [Fact]
-        public void YieldsWhenAnotherPluginPatchedToneMapping()
+        public void YieldsWhenAnotherOwnerAlreadyPatchedToneMapping()
         {
             var method = typeof(ToneMappingStandIn).GetMethod("Run");
             var other = new Harmony("sir-cel-shading");
@@ -69,6 +76,13 @@ namespace SirDiorama.Tests
                 other.UnpatchAll("sir-cel-shading");
             }
         }
+    }
+
+    [Collection(ToneMappingStandIn.Collection)]
+    public class CoexistenceTests
+    {
+        private const string Own = "sir-diorama";
+        private const string Step = "MyToneMapping.Run";
 
         // Our own patch alone is not another plugin: the step is ours.
         [Fact]

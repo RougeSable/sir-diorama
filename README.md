@@ -5,16 +5,21 @@ look of **Minecraft**: every surface drawn in big square texels of plain colour.
 
 - **Texels fastened to the world.** Each surface is cut into squares. On the
   ship or station the player is in or next to, they follow its axes and texel
-  edges fall exactly on block edges (16 texels per metre by default, as in
-  Minecraft: 40 on a large block, 8 on a small one). Everywhere else, on a
+  edges fall exactly on block edges (8 texels per metre by default, the
+  closest to Minecraft on screen: 20 on a large block, 4 on a small one). Everywhere else, on a
   planet the ground carries square texels along its vertical, and in space
   they follow the world axes, even while the player's ship flies. The texels
-  stay where they are on the surfaces: nothing flickers while nothing moves.
+  stay where they are on the surfaces: nothing flickers while nothing moves,
+  and a texel keeps its colour while the player walks past it.
 - **Big even far away.** With distance, texels double in size so that none is
   smaller than a few screen pixels (4 by default): planets, asteroids and far
   ships keep the blocky look.
 - **Plain colours.** Each texel shows the average light of the surface over
-  it, then the game's own final colours, with a touch of extra saturation.
+  it, then the game's own final colours, with extra saturation (75 % by
+  default).
+- **LCD screens stay readable.** The screens near the player (LCD panels,
+  cockpit and programmable block screens, within 100 m) keep the game's own
+  pixels and colours: their text reads exactly as without the plugin.
 - **Sharp everywhere.** No blur of any kind, at any distance.
 - The interface (HUD, chat, menus, terminal, texts) stays sharp; screenshots
   taken with the game's key show the effect.
@@ -28,15 +33,15 @@ look of **Minecraft**: every surface drawn in big square texels of plain colour.
   Sir Cel Shading's, and modifiers must match exactly (`Ctrl+F2` does not
   trigger it). It can be changed in the settings or with `/diorama key Ctrl+F9`.
 - **Settings**: Pulsar, Sir Diorama, settings button. The first setting is the
-  **Enable plugin** box. Then come the texels per metre (4, 8, 16 or 32), the
-  smallest texel on screen (2 to 8 pixels), the colour boost (0 to 100 %) and
-  the shortcut. Every change shows on the next frame; none compiles anything.
+  **Enable plugin** box. Then come the texels per metre (4, 8, 16 or 32; 8 by
+  default), the smallest texel on screen (2 to 8 pixels; 4), the colour boost
+  (0 to 100 %; 75 %) and the shortcut. Every change shows on the next frame; none compiles anything.
 - **Chat**: `/diorama` toggles the look; `/diorama on`, `/diorama off`,
   `/diorama status`, `/diorama key <shortcut>`. The command is not sent to the
   other players.
 - **Saved settings**: `%AppData%\SpaceEngineers\Storage\sir-diorama\settings.xml`.
 
-The defaults are a starting point, to be tuned in game.
+The defaults are the values found closest to Minecraft in game.
 
 ## How it works
 
@@ -53,27 +58,38 @@ before the selection highlight, the billboards, FXAA and the interface.
    session (`MyShaderCompiler.Compile`, which refuses without crashing, then
    `MyComputeShaders.Create`), puts it in the game's static field, binds the
    scene depth (`MyGBuffer.Main.ResolvedDepthStencil.SrvDepth`) in `t31` and
-   the plugin's constant buffer in `b6`, filled for the frame being drawn. The
+   the plugin's constant buffer in `b6`, filled for the frame being drawn
+   (the frames of the texels and the boxes of the LCD screens nearby). The
    postfix gives the field its game shader back and unbinds both slots. A
    finalizer does the same if the pass fails.
 3. Off, the prefix touches nothing.
 
 For every pixel, the shader:
 
-- rebuilds the point seen there from the depth, and the plane of the surface
-  from the neighbouring depths (on each side, the one that crosses no edge);
+- rebuilds the point seen there from the depth. If the view to that point
+  meets one of the LCD screens nearby, the pixel keeps the game's own colour
+  (a see-through screen included) and the rest is skipped;
+- rebuilds the plane of the surface from the neighbouring depths (on each
+  side, the one that crosses no edge);
 - takes the frame the texels are fastened to and the two of its axes that lie
   best in the surface (a 45 degree slope always picks the same pair);
 - finds the texel holding the point, doubling its size far away until it
   covers the smallest size on screen (sizes are powers of two, so coarse
-  texels fall exactly on fine ones);
-- averages the scene over nine taps spread on the texel, keeping only the taps
-  where what is really seen lies on the plane of the surface (nothing in front,
-  nothing past an edge). Every pixel of a texel finds the same taps: the texel
-  is one plain colour;
+  texels fall exactly on fine ones). The size is decided at the centre of each
+  candidate texel, from the coarsest down, never at the pixel: every pixel of
+  a texel takes the same size, and no texel is split between two sizes;
+- averages the scene over nine taps spread on the texel. The taps are points
+  fastened to the surface, read with the game's bilinear filter exactly where
+  they fall on screen (not rounded to a pixel): they keep their colour while
+  the camera moves, so the texel does not flicker on detailed textures. A tap
+  counts as far as what is really seen there lies on the plane of the surface
+  (nothing in front, nothing past an edge), with a smooth weight: no tap comes
+  or goes at once. Every pixel of a texel finds the same taps: the texel is one
+  plain colour;
 - then applies the game's final colours (exposure, bloom, filmic curve, colour
   filters) and the colour boost, which saturates around the luminance and never
-  changes it. The game's film grain is left out: it changes every frame.
+  changes it (not on the LCD screens). The game's film grain is left out: it
+  changes every frame.
 
 **The frames.** Every few updates the main thread chooses two of them. The
 frame of the surroundings: in gravity, a frame whose Y axis points up (kept
@@ -89,6 +105,17 @@ reads the grid's matrix from its own copy of the scene
 (`MyIDTracker<MyActor>`), for the very frame being drawn, so the ship's
 surfaces keep their texels while it flies. Other ships that move still slide
 under their texels: the depth does not say which object a pixel belongs to.
+
+**The LCD screens.** Twice per second, the main thread looks for the blocks
+with text surfaces within 100 m in front of the camera. A screen is the part of
+the block's model drawn with a screen material (the `ScreenAreas` of the block
+definitions: `ScreenArea`, `CockpitScreen_01`, `TransparentScreenArea`...),
+read once per model from the game's model data: in a cockpit, only its screens
+keep the game's pixels, not the whole cockpit. An LCD panel whose model has no
+such part is taken whole. The 16 nearest screens go to the shader as boxes in
+their grid's axes, with 2 cm of margin and at least 10 cm of thickness, placed
+by the render thread with the grid's matrix of the frame being drawn.
+
 Positions reach
 millions of metres, beyond float precision: the camera is given to the shader
 in the frame's axes, in double precision, modulo a period that every texel size
@@ -100,9 +127,11 @@ debug overrides where FXAA is off, so texel edges stay crisp. The game's
 settings are never changed; when the effect is off, the game's own overrides
 come back and FXAA is as it was set.
 
-**Cost.** Per pixel: five depth reads for the plane, then nine taps (a
-projection, a depth read and a scene read each). No extra render target, no
-extra pass: the work happens inside the game's own final colour pass.
+**Cost.** Per pixel: a box test per LCD screen nearby (16 at most), five depth
+reads for the plane, a little arithmetic for the size, then nine taps (a
+projection, a depth read and a filtered scene read each). No extra render
+target, no extra pass: the work happens inside the game's own final colour
+pass.
 
 **What is drawn after the effect.** The selection highlight and the billboards
 drawn after the final colours stay at full resolution, on top of the texels.
@@ -143,7 +172,7 @@ environment variable, then in the most common Steam libraries. For another
 place, see `Directory.Build.props.example`.
 
 The tests cover the pure logic (`Source/Logic`): settings, texel grid and
-frames, shortcut, command, session stop, coexistence (with a real Harmony patch
+frames, LCD screen boxes, shortcut, command, session stop, coexistence (with a real Harmony patch
 standing for another plugin) and shader variants. They need neither the game
 nor Pulsar. When the game's shader folder is found (`SE_SHADERS`, `SE_BIN64`,
 or a copy of the game next to the repository), they also compile every variant

@@ -259,23 +259,35 @@ namespace SirDiorama
         }
     }
 
-    // The shader's constant buffer, packed as ten float4 (160 bytes):
+    // The shader's constant buffer, packed as float4:
     //   0  grid AxisX.xyz, texel size (m)
     //   1  grid AxisY.xyz, smallest texel on screen (px)
     //   2  grid AxisZ.xyz, colour boost (0 to 1)
     //   3  camera in the grid frame, wrapped; near limit (m)
     //   4  grid box min, relative to the camera, in the grid axes; 1 if a grid
     //   5  grid box max, relative to the camera, in the grid axes; 0
-    //   6  surroundings AxisX.xyz; 0
+    //   6  surroundings AxisX.xyz; number of screens
     //   7  surroundings AxisY.xyz; 0
     //   8  surroundings AxisZ.xyz; 0
     //   9  camera in the surroundings frame, wrapped; 0
+    //   10 and on: three float4 per screen (see PackScreen), MaxScreens of them
     // Without a grid, the grid slots hold the frame of the surroundings and
     // an empty box: no point takes them.
     public static class LookConstants
     {
-        public const int FloatCount = 40;
+        // Screens (LCD) left as the game draws them, at most, the nearest
+        // ones: a pixel checks them all.
+        public const int MaxScreens = 16;
+
+        public const int ScreenStart = 40;
+        public const int ScreenCountIndex = 27;
+        public const int FloatCount = ScreenStart + MaxScreens * 12;
         public const int ByteSize = FloatCount * sizeof(float);
+
+        // Around the screen's own mesh: a little in its plane, and a minimum
+        // thickness, since a screen is flat.
+        public const double ScreenMargin = 0.02;
+        public const double ScreenMinHalfThickness = 0.05;
 
         // A frame as the shader sees it: its axes, and the camera in it.
         public struct Frame
@@ -349,6 +361,87 @@ namespace SirDiorama
                     return false;
             }
             return true;
+        }
+
+        // One screen, as a box in the axes of its grid (from the grid's
+        // origin), for the frame being drawn. The shader receives three rows:
+        // local = row.xyz . p + row.w gives, for a point p relative to the
+        // camera in world axes, its place in the box, from -1 to 1 on each
+        // axis. False, and nothing written, past MaxScreens.
+        public static bool PackScreen(float[] target, int index, Vec3d gridOrigin, Vec3d gridX, Vec3d gridY, Vec3d gridZ,
+            Vec3d boxMin, Vec3d boxMax, Vec3d camera)
+        {
+            if (index < 0 || index >= MaxScreens)
+                return false;
+
+            var centre = (boxMin + boxMax) * 0.5;
+            var half = (boxMax - boxMin) * 0.5;
+            var fromCamera = gridOrigin + gridX * centre.X + gridY * centre.Y + gridZ * centre.Z - camera;
+
+            var start = ScreenStart + index * 12;
+            PutRow(target, start, gridX, half.X, fromCamera);
+            PutRow(target, start + 4, gridY, half.Y, fromCamera);
+            PutRow(target, start + 8, gridZ, half.Z, fromCamera);
+            return true;
+        }
+
+        public static void SetScreenCount(float[] target, int count)
+        {
+            target[ScreenCountIndex] = Math.Max(0, Math.Min(MaxScreens, count));
+        }
+
+        private static void PutRow(float[] target, int index, Vec3d axis, double half, Vec3d fromCamera)
+        {
+            var h = Math.Max(Math.Abs(half) + ScreenMargin, ScreenMinHalfThickness);
+            var scaled = axis * (1.0 / h);
+            Put(target, index, scaled, (float)(-Vec3d.Dot(scaled, fromCamera)));
+        }
+
+        // What the shader decides for a point seen at this position relative
+        // to the camera (world axes), with the same float arithmetic: true
+        // when the view to that point meets a screen, which then keeps the
+        // game's own pixels. A point behind a see-through screen counts too.
+        // When the camera itself is in a screen's box (the player's nose on
+        // it), only the points in the box count, not the whole view.
+        public static bool CoversScreen(float[] constants, Vec3d position)
+        {
+            var count = (int)constants[ScreenCountIndex];
+            var p = new[] { (float)position.X, (float)position.Y, (float)position.Z };
+            for (var s = 0; s < count && s < MaxScreens; s++)
+            {
+                var row = ScreenStart + s * 12;
+                var start = new float[3];
+                var end = new float[3];
+                for (var i = 0; i < 3; i++)
+                {
+                    var r = row + 4 * i;
+                    start[i] = constants[r + 3];
+                    end[i] = constants[r] * p[0] + constants[r + 1] * p[1] + constants[r + 2] * p[2] + constants[r + 3];
+                }
+
+                if (Math.Abs(start[0]) <= 1f && Math.Abs(start[1]) <= 1f && Math.Abs(start[2]) <= 1f)
+                {
+                    if (Math.Abs(end[0]) <= 1f && Math.Abs(end[1]) <= 1f && Math.Abs(end[2]) <= 1f)
+                        return true;
+                    continue;
+                }
+
+                var near = 0f;
+                var far = 1f;
+                for (var i = 0; i < 3; i++)
+                {
+                    var d = end[i] - start[i];
+                    if (Math.Abs(d) < 1e-6f)
+                        d = 1e-6f;
+                    var t0 = (-1f - start[i]) / d;
+                    var t1 = (1f - start[i]) / d;
+                    near = Math.Max(near, Math.Min(t0, t1));
+                    far = Math.Min(far, Math.Max(t0, t1));
+                }
+                if (near <= far)
+                    return true;
+            }
+            return false;
         }
 
         private static void Put(float[] target, int index, Vec3d v, float w)

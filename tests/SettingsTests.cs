@@ -11,10 +11,11 @@ namespace SirDiorama.Tests
         {
             var s = new LookSettings();
             Assert.True(s.Enabled);
-            Assert.Equal(16, s.TexelDensity);
-            Assert.Equal(1.0 / 16, s.TexelSize);
+            // The values found closest to Minecraft in game.
+            Assert.Equal(8, s.TexelDensity);
+            Assert.Equal(1.0 / 8, s.TexelSize);
             Assert.Equal(4, s.SmallestTexel);
-            Assert.Equal(20, s.ColourBoost);
+            Assert.Equal(75, s.ColourBoost);
             Assert.Equal("Alt+F2", s.Hotkey);
         }
 
@@ -73,7 +74,7 @@ namespace SirDiorama.Tests
                 File.WriteAllText(path, "<not xml");
                 var read = SettingsFile.Load(path, out problem);
                 Assert.NotNull(problem);
-                Assert.Equal(16, read.TexelDensity);
+                Assert.Equal(LookSettings.TexelDensityDefault, read.TexelDensity);
             }
             finally
             {

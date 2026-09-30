@@ -48,7 +48,7 @@ namespace SirDiorama
             "The blocky look, in the manner of Minecraft. Unticked, the game gets its own rendering back, exactly.";
         public const string TexelDensity = "Texels per metre";
         public const string TexelDensityHelp =
-            "How many texels cover one metre of surface. 16 is Minecraft's own: a large block is 40 texels wide, a small one 8.";
+            "How many texels cover one metre of surface. 8 by default, the closest to Minecraft: a large block is 20 texels wide, a small one 4.";
         public const string SmallestTexel = "Smallest texel";
         public const string SmallestTexelHelp =
             "Far away, texels grow so that none is smaller than this many screen pixels.";
